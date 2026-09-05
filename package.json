@@ -1,0 +1,39 @@
+{
+  "name": "tamo",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.11.0",
+  "engines": {
+    "node": ">=24.15.0"
+  },
+  "bin": {
+    "tamo": "./src/cli.ts"
+  },
+  "scripts": {
+    "tamo": "node src/cli.ts",
+    "test": "node --test test/*.test.ts",
+    "test:integration": "node test/integration.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "oxlint src test",
+    "format": "oxfmt --write src/*.ts src/features/*.ts test/*.ts",
+    "format:check": "oxfmt --check src/*.ts src/features/*.ts test/*.ts",
+    "check": "pnpm typecheck && pnpm lint && pnpm format:check && pnpm test",
+    "prepare": "effect-tsgo patch --no-typescript --oxlint"
+  },
+  "dependencies": {
+    "@effect/platform-node": "4.0.0-rc.112",
+    "effect": "4.0.0-rc.112",
+    "jsonc-parser": "3.3.1"
+  },
+  "devDependencies": {
+    "@effect/tsgo": "0.38.0",
+    "@oxlint/plugins": "1.80.0",
+    "@types/node": "^24.0.0",
+    "oxfmt": "^0.66.0",
+    "oxlint": "1.80.0",
+    "oxlint-plugin-complexity": "^2.1.8",
+    "oxlint-tsgolint": "7.0.2001",
+    "typescript": "^5.9.2"
+  }
+}

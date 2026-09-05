@@ -1,0 +1,4 @@
+node_modules/
+.tamo-validation-*/
+.tamo-test-*/
+.pnpm-store/

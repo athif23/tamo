@@ -1,0 +1,9 @@
+{
+  "name": "tamo-slice-fixture",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.11.0",
+  "scripts": { "prepare": "node setup.mjs" },
+  "dependencies": { "effect": "4.0.0-rc.112" },
+  "devDependencies": { "oxlint": "1.80.0" }
+}

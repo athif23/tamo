@@ -1,0 +1,60 @@
+{
+  "plugins": [
+    "typescript",
+    "oxc",
+    "unicorn",
+    "effecttsgo"
+  ],
+  "rules": {
+    "eslint/no-debugger": "error",
+    "effecttsgo/strict-effect-provide": "error",
+    "effecttsgo/run-effect-inside-effect": "error",
+    "effecttsgo/try-catch-in-effect-gen": "error",
+    "effecttsgo/multiple-effect-provide": "error",
+    "effecttsgo/scope-in-layer-effect": "error",
+    "effecttsgo/layer-merge-all-with-dependencies": "error",
+    "effecttsgo/leaking-requirements": "error",
+    "tamo-effect/no-layer-in-service-class": "error",
+    "anti-slop/no-chained-type-assertions": "error",
+    "anti-slop/no-widen-then-assert": "error",
+    "anti-slop/require-safety-comment-for-type-assertion": "error",
+    "anti-slop/no-unknown-type-aliases": "error",
+    "anti-slop/no-module-mocking": "error",
+    "complexity/complexity": [
+      "error",
+      {
+        "cyclomatic": 20,
+        "cognitive": 15,
+        "minLines": 10
+      }
+    ]
+  },
+  "extends": [
+    "./node_modules/@effect/tsgo/oxlint-presets/correctness.json"
+  ],
+  "options": {
+    "typeAware": true
+  },
+  "overrides": [
+    {
+      "files": [
+        "**/test/**",
+        "scripts/**"
+      ],
+      "rules": {
+        "effecttsgo/strict-effect-provide": "off"
+      }
+    }
+  ],
+  "jsPlugins": [
+    "oxlint-plugin-complexity",
+    {
+      "name": "anti-slop",
+      "specifier": "./.config/oxlint/plugins/anti-slop/index.ts"
+    },
+    {
+      "name": "tamo-effect",
+      "specifier": "./.config/oxlint/tamo-effect.ts"
+    }
+  ]
+}

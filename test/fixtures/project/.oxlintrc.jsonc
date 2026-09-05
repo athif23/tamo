@@ -1,0 +1,7 @@
+{
+  // This project's choices must survive Tamo.
+  "plugins": ["typescript", "unicorn", "oxc"],
+  "extends": ["./lint-base.json"],
+  "rules": { "eslint/no-debugger": "error", "unicorn/no-null": "off" },
+  "overrides": [{ "files": ["*.js"], "rules": { "eslint/no-var": "error" } }]
+}

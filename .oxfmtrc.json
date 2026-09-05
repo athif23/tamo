@@ -1,0 +1,7 @@
+{
+  "$schema": "./node_modules/oxfmt/configuration_schema.json",
+  "ignorePatterns": [
+    "src/features/effect-oxlint/plugin.ts",
+    ".config/**"
+  ]
+}
