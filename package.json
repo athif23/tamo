@@ -17,10 +17,16 @@
     "node": ">=24.15.0"
   },
   "bin": {
-    "tamo": "./src/cli.ts"
+    "tamo": "./dist/cli.js"
   },
+  "files": [
+    "dist/",
+    "skills/tamo/"
+  ],
   "scripts": {
     "tamo": "node src/cli.ts",
+    "build": "tsc -p tsconfig.build.json",
+    "prepack": "pnpm build",
     "test": "node --test test/*.test.ts",
     "test:integration": "node test/integration.ts",
     "test:smoke-shadcn": "node test/shadcn-smoke.ts",
