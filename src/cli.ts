@@ -219,7 +219,75 @@ Commands:
 
 Developer state (recipes) lives under the Tamo home directory
 (default ~/.tamo); set TAMO_HOME to relocate it.
-On Windows: pnpm tamo <command> ...`;
+
+Run tamo <command> --help for command-specific usage and flags.`;
+
+const HELP_INSPECT = `tamo inspect [--cwd <path>] [--json]
+
+Report the factual setup of the target project: package manager,
+dependencies, recognized config files, and limitations. Read-only.
+
+Flags:
+  --cwd <path>   Inspect the project at <path> (default: current directory).
+  --json         Print the machine-readable inspection.`;
+
+const HELP_PACK = `tamo pack <recipe-name> [--cwd <path>] [--include <path>]... [--exclude <package>]... [--force] [--dry-run] [--json] [--yes]
+
+Capture the reusable parts of the current project as a recipe under the
+Tamo home: the manifest as a native artifact (minus the source project's
+name and version, which are project identity, not reusable setup) plus
+explicitly included files. Secrets, generated output, dependency
+directories, caches, and lockfiles are never captured. The source project
+is never modified.
+
+Flags:
+  --cwd <path>        Pack the project at <path> (default: current directory).
+  --include <path>    Also capture <path>; a directory expands into its
+                      contained files. Repeatable.
+  --exclude <package> Drop <package> from the captured manifest dependencies.
+                      Repeatable.
+  --force             Replace an existing recipe of the same name (repack
+                      rebuilds from the current project).
+  --dry-run           Show the recipe that would be saved without saving it.
+  --json              Print machine-readable output.
+  --yes               Save noninteractively (required outside a terminal).`;
+
+const HELP_CREATE = `tamo create <dir> --recipe <name> [--cwd <path>] [--dry-run] [--json] [--yes]
+
+Create a new ordinary project from a saved recipe: its native artifacts at
+their original relative paths (the package name follows the new target),
+and a planned pnpm install. Existing non-empty targets are never
+overwritten; the result carries no Tamo metadata. Recipes that need an
+upstream initializer run it first, then replan from fresh state.
+
+Flags:
+  --recipe <name>   The saved recipe to replay (required).
+  --cwd <path>      Resolve <dir> relative to <path> (default: current
+                    directory).
+  --dry-run         Show the plan without creating anything.
+  --json            Print machine-readable output.
+  --yes             Apply noninteractively (required outside a terminal).`;
+
+const HELP_ADD = `tamo add <recipe> [--cwd <path>] [--dry-run] [--json] [--yes]
+
+Apply reusable setup from a saved recipe to an existing project through
+recipes, artifact handlers, and Core planning. Plans are reviewed before
+anything is applied; conflicts block with zero operations.
+
+Flags:
+  --cwd <path>   Apply to the project at <path> (default: current directory).
+  --dry-run      Show the plan without changing anything.
+  --json         Print machine-readable output.
+  --yes          Apply noninteractively (required outside a terminal).`;
+
+function helpFor(positionals: string[]): string {
+  const [command] = positionals;
+  if (command === "inspect") return HELP_INSPECT;
+  if (command === "pack") return HELP_PACK;
+  if (command === "create") return HELP_CREATE;
+  if (command === "add") return HELP_ADD;
+  return HELP;
+}
 
 const main = Effect.gen(function* () {
   const { values, positionals } = parseArgs({
@@ -237,7 +305,7 @@ const main = Effect.gen(function* () {
     },
   });
   if (values.help) {
-    console.log(HELP);
+    console.log(helpFor(positionals));
     return;
   }
   const [command] = positionals;

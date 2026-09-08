@@ -39,7 +39,8 @@ tamo pack <recipe-name> [--cwd <path>] [--include <path>]... [--exclude <pkg>]..
   the target directory. Non-empty targets are blocked, never overwritten.
 - `add` applies a Recipe to the existing project at `--cwd` (default `.`).
 - `pack` captures the current project as a Recipe. The manifest is always
-  captured (minus the source project's `name`); other files only via
+  captured (minus the source project's `name` and `version`, which are
+  project identity rather than reusable setup); other files only via
   `--include` (a file or a directory, which expands); dependencies can be
   trimmed with `--exclude`. Secrets, keys, lockfiles, caches, dependency
   directories, and generated output are never captured. Repacking over an
@@ -84,10 +85,92 @@ user when judgment is required.
 
 ## Pack rules
 
-`pack` captures reusable native state as it exists. It does not infer
+`pack` captures reusable native state as it exists. Source package `name`
+and `version` are not captured as reusable identity. Pack does not infer
 Recipe ancestry, does not record which Recipes the project "uses", does
 not invent `behavior.mjs`, and needs no provenance metadata. Do not
 decompose or refactor the packed result.
+
+## Authoring a Recipe
+
+An agent can author a minimal durable Recipe from this section alone.
+Public layout (`recipe.json` holds composition metadata only, never native
+config):
+
+```text
+~/.tamo/recipes/<name>/
+  recipe.json     # includes + persistent customizations only
+  artifacts/**    # ordinary native project files at their project paths
+  behavior.mjs    # optional trusted local executable setup
+```
+
+Composition:
+
+```json
+{
+  "includes": [
+    {"recipe": "effect"},
+    {"recipe": "vitest"}
+  ]
+}
+```
+
+A persistent per-instance omission lives in the same file as an omit
+record (`instance` is the include chain relative to this recipe;
+selectors today are `dependencies`/`devDependencies` in `package.json`
+and `rules` in Oxlint configs):
+
+```json
+{
+  "customizations": [
+    {"op": "omit", "instance": ["effect"], "artifact": "package.json",
+     "selector": "dependencies", "entry": "stripe"}
+  ]
+}
+```
+
+### behavior.mjs
+
+Minimal valid plain-JS module (only `prepare`/`finalize`/`verify` keys are
+allowed; at least one hook must be present):
+
+```js
+export default {
+  prepare,   // optional: upstream commands whose output planning needs first
+  finalize,  // optional: commands that run after artifact writes are planned
+  verify,    // optional: check the applied result
+};
+```
+
+`prepare`/`finalize` receive `{ cwd, instance, artifacts, read, track }`:
+`cwd` is the target directory, `instance` the recipe's include chain,
+`artifacts` this instance's resolved contributions, `read(path)` a
+target-relative tracked read, and `track(path, contents)` explicit tracking
+for observations made outside `read`. `verify` receives only
+`{ cwd, instance, artifacts }` — it has no `read`/`track`.
+
+Result contract (anything else fails loudly at the Behavior boundary):
+
+- `prepare`/`finalize`: `undefined` (no procedural work), or
+  `{ conflicts?: string[], evidence?: string[], operations?: CommandOperation[] }`
+  with only those keys; omitted fields default to empty.
+- `verify`: `undefined` or `[]` means success, otherwise `string[]` failures.
+
+A command operation uses exactly these fields:
+
+```js
+{ kind: "command", executable: "pnpm", args: ["install"], cwd, purpose: "Install dependencies" }
+```
+
+`prepare`/`finalize` may only contribute command operations — they cannot
+directly write artifacts (a write operation is rejected). Native desired
+state belongs in `artifacts/**`. Gate Behavior on actual project state
+through the tracked reads so settled reruns plan nothing.
+
+During `create`, the target may not exist when `prepare` runs. A
+scaffolding initializer must therefore use an existing command cwd (often
+the parent workspace) and pass the target/name to the upstream CLI as
+needed.
 
 ## Trust
 
@@ -110,4 +193,5 @@ tamo --help
 tamo <command> --help
 ```
 
-Both print the supported commands and flags. Never guess flags.
+`tamo --help` prints the command overview; `tamo <command> --help` prints
+that command's usage and supported flags. Never guess flags.

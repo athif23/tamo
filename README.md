@@ -9,6 +9,8 @@ Implemented so far:
 - `tamo create <dir> --recipe <name>` — replay a saved recipe into a new, ordinary project: native artifacts at their original paths (the package name follows the new target) and a planned `pnpm install`.
 - `tamo add effect-oxlint` — add the preferred Effect lint setup to an existing pnpm project while preserving its Oxlint configuration.
 
+`tamo --help` prints the command overview; `tamo <command> --help` prints that command's usage and supported flags.
+
 ## Agent skill
 
 The canonical coding-agent skill lives at `skills/tamo/SKILL.md`. It teaches compatible coding agents how to operate the globally installed `tamo` CLI. The skill is instructions only — installing it does not install the Tamo executable itself.
@@ -50,9 +52,11 @@ pnpm --silent tamo create my-app --recipe web --json --yes
 pnpm tamo add effect-oxlint --cwd /path/to/project --dry-run
 ```
 
+Installed globally, `tamo` runs its planned pnpm operations itself on Windows; launching through `pnpm tamo` is not required.
+
 ### Pack
 
-`pack` inspects the target and builds a recipe: the manifest is captured as a native artifact (minus only the source project's `name`), dependencies can be trimmed with `--exclude`, and other files are captured only when explicitly included (`--include`; a path may be a file or a directory, which expands into its contained files). Stored content is native file bytes under `~/.tamo/recipes/<name>/` (`recipe.json` plus `artifacts/` mirroring project paths), so replay never depends on the source project and never re-encodes native configuration. Secrets, private keys, generated output, dependency directories, caches, VCS state, and lockfiles are never captured, and including them is rejected; `.env.example` is deliberately allowed as reusable seed content.
+`pack` inspects the target and builds a recipe: the manifest is captured as a native artifact (minus the source project's `name` and `version`, which are project identity rather than reusable setup), dependencies can be trimmed with `--exclude`, and other files are captured only when explicitly included (`--include`; a path may be a file or a directory, which expands into its contained files). Stored content is native file bytes under `~/.tamo/recipes/<name>/` (`recipe.json` plus `artifacts/` mirroring project paths), so replay never depends on the source project and never re-encodes native configuration. Secrets, private keys, generated output, dependency directories, caches, VCS state, and lockfiles are never captured, and including them is rejected; `.env.example` is deliberately allowed as reusable seed content.
 
 Noninteractive/JSON contract (first-class for agents): `--json --dry-run` prints the recipe with status `dry-run`; without `--yes`, status `confirmation-required` and exit 2; `--yes` saves with status `saved`; conflicts exit 1 with status `blocked`. Repacking over an existing recipe requires `--force` and rebuilds from the current project rather than merging the old recipe.
 
@@ -75,8 +79,6 @@ pnpm --silent tamo add effect-oxlint --cwd /path/to/project --dry-run --json
 ```
 
 Without `--yes`, interactive mode asks for confirmation. JSON mode and noninteractive mode return the plan with `confirmation-required` and exit 2. Dry-run never installs, patches, writes files, or runs validation probes. Conflicts and execution failures exit 1.
-
-On Windows, launch through `pnpm tamo`; the process runner uses pnpm's known JavaScript entry point rather than assembling a shell command.
 
 ## Supported scope
 

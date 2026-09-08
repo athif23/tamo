@@ -76,6 +76,17 @@ function utf8RoundTrips(contents: string, bytes: Uint8Array): boolean {
   return encoded.length === bytes.length && encoded.every((byte, index) => byte === bytes[index]);
 }
 
+// UTF-8 with an optional BOM (EF BB BF) is valid text input: the BOM is a
+// byte-order mark, not content — the default TextDecoder already strips it
+// on decode, which is why a plain round-trip check misclassifies BOM files
+// as binary. Pack normalizes the BOM away (the packed artifact decodes to
+// the same text); the source file is never modified.
+function withoutBom(bytes: Uint8Array): Uint8Array {
+  return bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf
+    ? bytes.slice(3)
+    : bytes;
+}
+
 // Packability gate: only ordinary Node/pnpm projects can be packed so far.
 function packableConflicts(inspection: Inspection): string[] {
   if (inspection.kind !== "node")
@@ -85,19 +96,25 @@ function packableConflicts(inspection: Inspection): string[] {
   return [];
 }
 
-// Capture the manifest as a native artifact. Source-project identity (`name`)
-// is not reusable, so it is stripped byte-surgically; everything else —
-// private, type, scripts, engines, dependencies — is captured verbatim.
+// Capture the manifest as a native artifact. Source-project identity (`name`
+// and `version`) is not reusable, so both are stripped byte-surgically;
+// everything else — private, type, scripts, engines, dependencies — is
+// captured verbatim. A manually authored recipe may still contribute
+// `version` explicitly; only pack's default capture drops it.
 async function captureManifest(cwd: string): Promise<{ contents?: string; conflicts: string[] }> {
   const absolute = join(cwd, "package.json");
   const bytes = await readBytes(absolute);
   if (bytes === null) return { conflicts: [`Included path does not exist: package.json`] };
-  const contents = new TextDecoder().decode(bytes);
-  if (!utf8RoundTrips(contents, bytes))
+  const text = withoutBom(bytes);
+  const contents = new TextDecoder().decode(text);
+  if (!utf8RoundTrips(contents, text))
     return { conflicts: [`package.json is binary; artifacts support UTF-8 text only so far.`] };
   let stripped: string;
   try {
-    stripped = "name" in json(contents, "package.json") ? removeKey(contents, ["name"]) : contents;
+    const parsed = json(contents, "package.json");
+    stripped = contents;
+    if ("name" in parsed) stripped = removeKey(stripped, ["name"]);
+    if ("version" in parsed) stripped = removeKey(stripped, ["version"]);
   } catch (error) {
     return { conflicts: [error instanceof Error ? error.message : String(error)] };
   }
@@ -194,8 +211,9 @@ export async function collectIncludedFiles(
       conflicts.push(`Included path does not exist: ${relativePath}`);
       return;
     }
-    const contents = new TextDecoder().decode(bytes);
-    if (!utf8RoundTrips(contents, bytes)) {
+    const text = withoutBom(bytes);
+    const contents = new TextDecoder().decode(text);
+    if (!utf8RoundTrips(contents, text)) {
       conflicts.push(`${relativePath} is binary; seed content supports UTF-8 text only so far.`);
       return;
     }

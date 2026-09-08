@@ -12,6 +12,7 @@ import { loadRecipe, saveRecipe } from "../src/recipes.ts";
 const root = resolve(".");
 const manifest = JSON.stringify({
   name: "source-project",
+  version: "1.0.0",
   private: true,
   type: "module",
   packageManager: "pnpm@10.11.0",
@@ -95,8 +96,9 @@ test("inspection notes a workspace manifest instead of failing", async () => {
   );
 });
 
-test("pack captures the manifest as a native artifact minus only the name", async () => {
+test("pack captures the manifest as a native artifact minus name and version", async () => {
   await withProject(async (cwd) => {
+    const before = await readFile(join(cwd, "package.json"));
     const packed = await packRecipe(cwd, "web", [], []);
     assert.deepEqual(packed.conflicts, []);
     assert.deepEqual(
@@ -105,13 +107,66 @@ test("pack captures the manifest as a native artifact minus only the name", asyn
     );
     const captured = JSON.parse(packed.recipe!.artifacts[0]!.contents);
     assert.equal(captured.name, undefined);
+    assert.equal(captured.version, undefined);
     // Everything else rides along verbatim: no field allowlist.
     assert.equal(captured.private, true);
     assert.equal(captured.type, "module");
     assert.equal(captured.packageManager, "pnpm@10.11.0");
     assert.deepEqual(captured.scripts, { build: "tsc" });
     assert.deepEqual(captured.dependencies, { effect: "4.0.0-rc.112", stripe: "^18.0.0" });
+    // The source project is byte-for-byte untouched by the capture.
+    assert.deepEqual(await readFile(join(cwd, "package.json")), before);
   });
+});
+
+test("UTF-8 with BOM packs as text while invalid bytes still block", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "tamo-bom-"));
+  try {
+    const bom = Buffer.from([0xef, 0xbb, 0xbf]);
+    await writeFile(join(cwd, "package.json"), Buffer.concat([bom, Buffer.from(manifest)]));
+    await writeFile(
+      join(cwd, "tsconfig.json"),
+      Buffer.concat([bom, Buffer.from('{"compilerOptions":{"strict":true}}\n')]),
+    );
+    await writeFile(join(cwd, "notes.txt"), Buffer.concat([bom, Buffer.from("hello\n")]));
+    const before = await readFile(join(cwd, "package.json"));
+
+    // A BOM manifest still inspects factually.
+    const inspection = await inspectProject(cwd);
+    assert.equal(inspection.kind, "node");
+    assert.equal(inspection.packageManager, "pnpm@10.11.0");
+
+    const packed = await packRecipe(cwd, "web", ["tsconfig.json", "notes.txt"], []);
+    assert.deepEqual(packed.conflicts, [], packed.conflicts.join("\n"));
+    assert.deepEqual(packed.recipe!.artifacts.map((artifact) => artifact.path).sort(), [
+      "notes.txt",
+      "package.json",
+      "tsconfig.json",
+    ]);
+    const captured = JSON.parse(
+      packed.recipe!.artifacts.find((artifact) => artifact.path === "package.json")!.contents,
+    );
+    assert.equal(captured.name, undefined);
+    assert.equal(captured.version, undefined);
+    assert.deepEqual(captured.dependencies, { effect: "4.0.0-rc.112", stripe: "^18.0.0" });
+    // The BOM normalizes away: packed artifacts stay valid text.
+    for (const artifact of packed.recipe!.artifacts)
+      assert.notEqual(artifact.contents.charCodeAt(0), 0xfeff, artifact.path);
+
+    // The source project is byte-for-byte untouched, BOM included.
+    assert.deepEqual(await readFile(join(cwd, "package.json")), before);
+
+    // Genuinely invalid bytes are still rejected as binary.
+    await writeFile(join(cwd, "binary.dat"), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0xff, 0xfe]));
+    const blocked = await collectIncludedFiles(cwd, ["binary.dat"]);
+    assert.deepEqual(blocked.files, []);
+    assert.ok(
+      blocked.conflicts.some((conflict) => conflict.includes("binary")),
+      blocked.conflicts.join("\n"),
+    );
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
 });
 
 test("excludes omit through the shared machinery and unknown excludes are flagged", async () => {

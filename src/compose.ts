@@ -541,6 +541,136 @@ function instanceLabel(instance: string[]): string {
   return `[${instance.join(" > ")}]`;
 }
 
+// Durable `behavior.mjs` is plain JavaScript, so TypeScript types do not
+// protect the runtime boundary: every hook result is validated and
+// normalized here, before later planning/runtime code can fail on it
+// incidentally. Errors name the recipe/behavior instance, the hook, and
+// the offending part of the returned value.
+function behaviorWhere(instance: string[], hook: string): string {
+  const name = instance.length ? instance[instance.length - 1] : undefined;
+  const who = name ? `Recipe '${name}' behavior` : "Recipe behavior";
+  return instance.length ? `${who} ${hook} ${instanceLabel(instance)}` : `${who} ${hook}`;
+}
+
+function describeValue(value: unknown): string {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "array";
+  if (typeof value === "object") return "object";
+  return typeof value;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function checkStringArray(value: unknown, field: string, where: string): string[] {
+  if (!Array.isArray(value))
+    throw new Error(`${where}: ${field} must be an array of strings, got ${describeValue(value)}.`);
+  for (const [index, entry] of value.entries())
+    if (typeof entry !== "string")
+      throw new Error(
+        `${where}: ${field}[${index}] must be a string, got ${describeValue(entry)}.`,
+      );
+  return [...value];
+}
+
+const commandOperationFields: readonly string[] = ["kind", "executable", "args", "cwd", "purpose"];
+
+function checkCommandOperation(value: unknown, index: number, where: string): CommandOperation {
+  const at = `${where}: operations[${index}]`;
+  if (!isPlainObject(value))
+    throw new Error(`${at} must be a command operation object, got ${describeValue(value)}.`);
+  if (value.kind === "write")
+    throw new Error(
+      `${at} is a write operation; prepare/finalize may only contribute command operations — they cannot directly write artifacts.`,
+    );
+  if (value.kind !== "command")
+    throw new Error(
+      `${at} must be a command operation with kind "command", got ${JSON.stringify(value.kind)}.`,
+    );
+  const unknownKeys = Object.keys(value).filter((key) => !commandOperationFields.includes(key));
+  if (unknownKeys.length)
+    throw new Error(
+      `${at} carries unknown key(s): ${unknownKeys.join(", ")}. Allowed: ${commandOperationFields.join(", ")}.`,
+    );
+  if (typeof value.executable !== "string" || !value.executable)
+    throw new Error(
+      `${at} executable must be a non-empty string, got ${describeValue(value.executable)}.`,
+    );
+  if (!Array.isArray(value.args) || !value.args.every((arg) => typeof arg === "string"))
+    throw new Error(`${at} args must be an array of strings, got ${describeValue(value.args)}.`);
+  if (typeof value.cwd !== "string" || !value.cwd)
+    throw new Error(`${at} cwd must be a non-empty string, got ${describeValue(value.cwd)}.`);
+  if (typeof value.purpose !== "string" || !value.purpose)
+    throw new Error(
+      `${at} purpose must be a non-empty string, got ${describeValue(value.purpose)}.`,
+    );
+  return {
+    kind: "command",
+    executable: value.executable,
+    args: [...value.args],
+    cwd: value.cwd,
+    purpose: value.purpose,
+  };
+}
+
+function checkOperationsArray(value: unknown, where: string): CommandOperation[] {
+  if (!Array.isArray(value))
+    throw new Error(`${where}: operations must be an array, got ${describeValue(value)}.`);
+  return value.map((operation, index) => checkCommandOperation(operation, index, where));
+}
+
+const fragmentFields: readonly string[] = ["conflicts", "evidence", "operations"];
+
+// Validate and normalize one prepare/finalize hook result into the internal
+// BehaviorFragment Core already uses: undefined or {} means no procedural
+// work, omitted fields default to empty, and anything malformed fails loudly
+// here instead of later planning/runtime code.
+export function checkBehaviorFragment(
+  instance: string[],
+  hook: "prepare" | "finalize",
+  result: unknown,
+): BehaviorFragment {
+  const where = behaviorWhere(instance, hook);
+  if (result === undefined) return { conflicts: [], evidence: [], operations: [] };
+  if (!isPlainObject(result))
+    throw new Error(
+      `${where}: result must be undefined or a plain object with only conflicts/evidence/operations, got ${describeValue(result)}.`,
+    );
+  const unknownKeys = Object.keys(result).filter((key) => !fragmentFields.includes(key));
+  if (unknownKeys.length)
+    throw new Error(
+      `${where}: result carries unknown key(s): ${unknownKeys.join(", ")}. Allowed: ${fragmentFields.join(", ")}.`,
+    );
+  return {
+    conflicts:
+      result.conflicts === undefined ? [] : checkStringArray(result.conflicts, "conflicts", where),
+    evidence:
+      result.evidence === undefined ? [] : checkStringArray(result.evidence, "evidence", where),
+    operations:
+      result.operations === undefined ? [] : checkOperationsArray(result.operations, where),
+  };
+}
+
+// Validate one verify hook result: undefined and [] both mean success,
+// otherwise the result must be an array of failure strings.
+export function checkVerifyResult(instance: string[], result: unknown): string[] {
+  const where = behaviorWhere(instance, "verify");
+  if (result === undefined) return [];
+  if (!Array.isArray(result))
+    throw new Error(
+      `${where}: result must be undefined or an array of strings, got ${describeValue(result)}.`,
+    );
+  for (const [index, entry] of result.entries())
+    if (typeof entry !== "string")
+      throw new Error(
+        `${where}: failures[${index}] must be a string, got ${describeValue(entry)}.`,
+      );
+  return [...result];
+}
+
 const BEHAVIOR_HOOKS = ["prepare", "finalize", "verify"] as const;
 
 // Validate a behavior module's default export at the loading boundary.
@@ -656,13 +786,17 @@ async function planPrepare(
     .filter((artifact) => sameInstance(artifact.instance, instance))
     .map(({ path, contents }) => ({ path, contents }));
   try {
-    return await behavior.prepare({
-      cwd,
+    return checkBehaviorFragment(
       instance,
-      artifacts: instanceArtifacts,
-      read: tracked.read,
-      track: tracked.track,
-    });
+      "prepare",
+      await behavior.prepare({
+        cwd,
+        instance,
+        artifacts: instanceArtifacts,
+        read: tracked.read,
+        track: tracked.track,
+      }),
+    );
   } catch (error) {
     return {
       conflicts: [
@@ -716,13 +850,17 @@ async function finalizeBehavior(
     .filter((artifact) => sameInstance(artifact.instance, instance))
     .map(({ path, contents }) => ({ path, contents }));
   try {
-    return await behavior.finalize({
-      cwd,
+    return checkBehaviorFragment(
       instance,
-      artifacts: instanceArtifacts,
-      read: tracked.read,
-      track: tracked.track,
-    });
+      "finalize",
+      await behavior.finalize({
+        cwd,
+        instance,
+        artifacts: instanceArtifacts,
+        read: tracked.read,
+        track: tracked.track,
+      }),
+    );
   } catch (error) {
     return {
       conflicts: [
@@ -761,15 +899,22 @@ export async function verifyComposition(input: CompositionInput): Promise<string
   const failures: string[] = [];
   for (const ref of behaviorRefs(bound.recipes, resolution)) {
     if (!ref.behavior.verify) continue;
-    failures.push(
-      ...(await ref.behavior.verify({
-        cwd: input.cwd,
-        instance: ref.instance,
-        artifacts: resolution.contributions
-          .filter((artifact) => sameInstance(artifact.instance, ref.instance))
-          .map(({ path, contents }) => ({ path, contents })),
-      })),
-    );
+    try {
+      failures.push(
+        ...checkVerifyResult(
+          ref.instance,
+          await ref.behavior.verify({
+            cwd: input.cwd,
+            instance: ref.instance,
+            artifacts: resolution.contributions
+              .filter((artifact) => sameInstance(artifact.instance, ref.instance))
+              .map(({ path, contents }) => ({ path, contents })),
+          }),
+        ),
+      );
+    } catch (error) {
+      failures.push(error instanceof Error ? error.message : String(error));
+    }
   }
   return failures;
 }

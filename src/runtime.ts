@@ -3,6 +3,8 @@ import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
 import * as Path from "effect/Path";
 import * as Stream from "effect/Stream";
+import { existsSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { layer as nodeServices, type NodeServices } from "@effect/platform-node/NodeServices";
 import type { PlatformError } from "effect/PlatformError";
@@ -47,13 +49,124 @@ const readFileBytesOrNull = (path: string) =>
     fs.readFile(path).pipe(Effect.catchIf(isNotFound, () => Effect.succeed(null))),
   );
 
+// Windows pnpm resolution for a globally invoked `tamo`: the process runner
+// avoids a shell by executing pnpm's JavaScript entry through the current
+// Node. The entry is located in the smallest robust way — first the
+// pnpm-managed entry when Tamo itself runs under pnpm, otherwise a PATH
+// scan for a pnpm shim with its sibling JS entry or a standalone pnpm.exe.
+// No absolute install path is hardcoded and no shell is introduced.
+function isPnpmEntry(entry: string): boolean {
+  return /pnpm\.(?:c?js|mjs)$/i.test(entry);
+}
+
+export type WindowsPnpmLookup = {
+  npmExecpath?: string;
+  pathEnv?: string;
+  nodeExecutable?: string;
+  fileExists?: (path: string) => boolean;
+};
+
+function stripQuotes(dir: string): string {
+  const trimmed = dir.trim();
+  if (trimmed.length >= 2 && trimmed.startsWith('"') && trimmed.endsWith('"'))
+    return trimmed.slice(1, -1);
+  return trimmed;
+}
+
+const pnpmJsCandidates = ["pnpm.mjs", "pnpm.cjs", "pnpm.js"];
+
+// Probe one PATH directory for a runnable pnpm without a shell: a
+// standalone pnpm.exe wins, otherwise a pnpm.cmd shim's sibling JS entry
+// runs through Node. Returns null when this directory yields nothing.
+function probeWindowsPnpmDir(
+  dir: string,
+  nodeExecutable: string,
+  args: string[],
+  fileExists: (path: string) => boolean,
+): { executable: string; args: string[] } | null {
+  const exe = join(dir, "pnpm.exe");
+  if (fileExists(exe)) return { executable: exe, args };
+
+  const shim = join(dir, "pnpm.cmd");
+  if (!fileExists(shim)) return null;
+  const layouts = [
+    join(dirname(shim), "..", "node_modules", "pnpm", "bin"),
+    join(dirname(shim), "node_modules", "pnpm", "bin"),
+  ];
+  for (const layout of layouts)
+    for (const file of pnpmJsCandidates) {
+      const entry = join(layout, file);
+      if (fileExists(entry)) return { executable: nodeExecutable, args: [entry, ...args] };
+    }
+  return null;
+}
+
+// The pnpm-managed entry wins when Tamo itself runs under pnpm; a missing
+// or foreign entry falls through to the PATH scan.
+function pnpmEntryViaNpmExecpath(
+  npmExecpath: string | undefined,
+  nodeExecutable: string,
+  args: string[],
+  fileExists: (path: string) => boolean,
+): { executable: string; args: string[] } | null {
+  if (!npmExecpath || !isPnpmEntry(npmExecpath)) return null;
+  try {
+    return fileExists(npmExecpath)
+      ? { executable: nodeExecutable, args: [npmExecpath, ...args] }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function probePathDir(
+  raw: string,
+  nodeExecutable: string,
+  args: string[],
+  fileExists: (path: string) => boolean,
+): { executable: string; args: string[] } | null {
+  const dir = stripQuotes(raw);
+  if (!dir) return null;
+  try {
+    return probeWindowsPnpmDir(dir, nodeExecutable, args, fileExists);
+  } catch {
+    return null;
+  }
+}
+
+// Pure, platform-independent core of the Windows lookup so tests can
+// simulate Windows PATH layouts deterministically on any host.
+export function resolveWindowsPnpm(
+  args: string[],
+  lookup: WindowsPnpmLookup = {},
+): { executable: string; args: string[] } | null {
+  const nodeExecutable = lookup.nodeExecutable ?? process.execPath;
+  const fileExists = lookup.fileExists ?? existsSync;
+  const viaManaged = pnpmEntryViaNpmExecpath(
+    lookup.npmExecpath ?? process.env.npm_execpath,
+    nodeExecutable,
+    args,
+    fileExists,
+  );
+  if (viaManaged) return viaManaged;
+  // Windows PATH semantics explicitly: `;`-separated (drive letters contain
+  // `:`), so tests can inject Windows-style layouts on any host.
+  const pathEnv = lookup.pathEnv ?? process.env.PATH ?? "";
+  for (const raw of pathEnv.split(";")) {
+    const resolved = probePathDir(raw, nodeExecutable, args, fileExists);
+    if (resolved) return resolved;
+  }
+  return null;
+}
+
 // Run pnpm's JS entry directly on Windows; never interpolate project input into a shell.
 function prepare(executable: string, args: string[]): { executable: string; args: string[] } {
   if (executable === "pnpm" && process.platform === "win32") {
-    const entry = process.env.npm_execpath;
-    if (!entry || !/pnpm\.(?:c?js)$/i.test(entry))
-      throw new Error("On Windows, launch Tamo with pnpm tamo so its pnpm executable is known.");
-    return { executable: process.execPath, args: [entry, ...args] };
+    const resolved = resolveWindowsPnpm(args);
+    if (resolved) return resolved;
+    throw new Error(
+      "pnpm executable not found. Install pnpm and ensure it is on PATH, then retry.",
+    );
   }
   return { executable, args };
 }

@@ -11,8 +11,11 @@ export function object(value: unknown): value is ObjectJson {
 }
 
 export function json(text: string, path: string): ObjectJson {
+  // A preserved BOM (reads that keep it as U+FEFF) is not content: strip it
+  // before parsing so BOM-carrying targets still decode as JSON/JSONC.
+  const stripped = text.startsWith("\uFEFF") ? text.slice(1) : text;
   const errors: ParseError[] = [];
-  const value: unknown = parse(text, errors, { allowTrailingComma: true });
+  const value: unknown = parse(stripped, errors, { allowTrailingComma: true });
   if (errors.length || !object(value))
     throw new Error(`Expected a valid JSON/JSONC object: ${path}`);
   return value;

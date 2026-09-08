@@ -77,9 +77,13 @@ export async function inspectProject(cwd: string): Promise<Inspection> {
     notes.push("No package.json; only Node projects are understood so far.");
     return inspection;
   }
+  // UTF-8 BOM (EF BB BF) is valid text input: reads that preserve it as
+  // U+FEFF still decode as JSON after stripping the mark.
+  const manifestSource =
+    manifestText.charCodeAt(0) === 0xfeff ? manifestText.slice(1) : manifestText;
   let manifest: unknown;
   try {
-    manifest = JSON.parse(manifestText);
+    manifest = JSON.parse(manifestSource);
   } catch {
     notes.push("package.json is not valid JSON.");
     return inspection;
