@@ -22,7 +22,7 @@ Tamo lets those preferences live as reusable Recipes. Define a setup once, then 
 ## Installation
 
 ```sh
-npm install -g tamo
+npm install -g @atindo23/tamo
 tamo --help
 ```
 

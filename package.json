@@ -1,7 +1,10 @@
 {
-  "name": "tamo",
+  "name": "@atindo23/tamo",
   "version": "0.1.0",
   "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/athif23/tamo.git"
@@ -16,7 +19,7 @@
     "node": ">=24.15.0"
   },
   "bin": {
-    "tamo": "./dist/cli.js"
+    "tamo": "dist/cli.js"
   },
   "files": [
     "dist/",
