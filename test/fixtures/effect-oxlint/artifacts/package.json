@@ -1,0 +1,10 @@
+{
+  "scripts": {
+    "prepare": "effect-tsgo patch --no-typescript --oxlint"
+  },
+  "devDependencies": {
+    "@effect/tsgo": "0.38.0",
+    "oxlint-tsgolint": "7.0.2001",
+    "@oxlint/plugins": "1.80.0"
+  }
+}

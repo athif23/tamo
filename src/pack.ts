@@ -1,16 +1,21 @@
-import { basename, relative, resolve } from "node:path";
-import type { Inspection } from "./inspect.ts";
+import { join, relative, resolve } from "node:path";
+import type { Artifact } from "./compose.ts";
+import { packageManifestHandler } from "./handlers/package-manifest.ts";
+import { inspectProject, type Inspection } from "./inspect.ts";
+import { json, removeKey } from "./jsonc.ts";
 import { entryType, listDirectory, readBytes } from "./runtime.ts";
-import type { Preset, PresetFile } from "./preset.ts";
+import { lookupMap, mapField } from "./structure.ts";
 
-// Pack turns a factual inspection into a reviewed preset candidate. It never
-// mutates the source project; its only output is a preset under the Tamo home.
+// Pack turns a factual inspection into a reviewed recipe: the manifest
+// captured as a native artifact plus explicitly included files. It never
+// mutates the source project; its only output is a recipe directory under
+// the Tamo home.
 //
-// Safety boundary: dependencies detected in the manifest may be suggested for
-// inclusion, but arbitrary application source is never captured automatically,
-// and some state is never captured at all — secrets, generated output,
-// dependency directories, caches, and lockfiles. .env.example is deliberately
-// allowed: it is the conventional reusable environment template, not a secret.
+// Safety boundary: the manifest is always captured, but arbitrary
+// application source is never captured automatically, and some state is
+// never captured at all — secrets, generated output, dependency directories,
+// caches, and lockfiles. .env.example is deliberately allowed: it is the
+// conventional reusable environment template, not a secret.
 // This denylist is deliberately small and explicit rather than an attempt at
 // universal secret detection.
 const deniedDirectories = new Set([
@@ -43,7 +48,7 @@ function deniedFileName(name: string): boolean {
 }
 
 // Pure name-based policy, shared by pack (walking real files) and create
-// (re-checking preset seed paths without touching the filesystem).
+// (re-checking recipe artifact paths without touching the filesystem).
 export function nameViolations(relativePath: string): string[] {
   const segments = relativePath.split("/");
   for (const segment of segments.slice(0, -1))
@@ -57,18 +62,13 @@ export function nameViolations(relativePath: string): string[] {
   return [];
 }
 
-// Seed content must never carry the generated manifest; create owns it.
-function manifestViolation(relativePath: string): string[] {
-  return basename(relativePath).toLowerCase() === "package.json"
-    ? [`${relativePath} would replace the generated package.json and cannot be seed content.`]
-    : [];
-}
-
+// package.json is always captured as the recipe's manifest artifact, so it
+// is not an include violation; create stamps the target name into it.
 export function seedPathViolations(relativePath: string): string[] {
-  return [...manifestViolation(relativePath), ...nameViolations(relativePath)];
+  return nameViolations(relativePath);
 }
 
-export type Candidate = { preset: Preset; conflicts: string[] };
+export type PackedRecipe = { name: string; artifacts: Artifact[] };
 
 // Decoding must round-trip; a mismatch means the file is not UTF-8 text.
 function utf8RoundTrips(contents: string, bytes: Uint8Array): boolean {
@@ -76,42 +76,103 @@ function utf8RoundTrips(contents: string, bytes: Uint8Array): boolean {
   return encoded.length === bytes.length && encoded.every((byte, index) => byte === bytes[index]);
 }
 
-// The candidate suggests every manifest dependency (the caller may exclude
-// some) and captures no files; files are opt-in through explicit includes.
-export function buildCandidate(inspection: Inspection, excludes: string[]): Candidate {
-  const conflicts: string[] = [];
+// Packability gate: only ordinary Node/pnpm projects can be packed so far.
+function packableConflicts(inspection: Inspection): string[] {
   if (inspection.kind !== "node")
-    conflicts.push("Only Node projects can be packed so far; no package.json was understood.");
-  else if (!inspection.packageManager?.startsWith("pnpm@"))
-    conflicts.push("Only pnpm projects can be packed so far.");
+    return ["Only Node projects can be packed so far; no package.json was understood."];
+  if (!inspection.packageManager?.startsWith("pnpm@"))
+    return ["Only pnpm projects can be packed so far."];
+  return [];
+}
 
-  const exclude = new Set(excludes);
-  const pick = (section: Record<string, string>) =>
-    Object.fromEntries(Object.entries(section).filter(([name]) => !exclude.has(name)));
-  for (const name of excludes)
-    if (!(name in inspection.dependencies) && !(name in inspection.devDependencies))
-      conflicts.push(`Excluded package is not in the manifest: ${name}`);
-
-  const candidate: Preset = {
-    name: "",
-    packageManager: inspection.packageManager ?? "",
-    dependencies: pick(inspection.dependencies),
-    devDependencies: pick(inspection.devDependencies),
-    files: [],
+// Capture the manifest as a native artifact. Source-project identity (`name`)
+// is not reusable, so it is stripped byte-surgically; everything else —
+// private, type, scripts, engines, dependencies — is captured verbatim.
+async function captureManifest(cwd: string): Promise<{ contents?: string; conflicts: string[] }> {
+  const absolute = join(cwd, "package.json");
+  const bytes = await readBytes(absolute);
+  if (bytes === null) return { conflicts: [`Included path does not exist: package.json`] };
+  const contents = new TextDecoder().decode(bytes);
+  if (!utf8RoundTrips(contents, bytes))
+    return { conflicts: [`package.json is binary; artifacts support UTF-8 text only so far.`] };
+  let stripped: string;
+  try {
+    stripped = "name" in json(contents, "package.json") ? removeKey(contents, ["name"]) : contents;
+  } catch (error) {
+    return { conflicts: [error instanceof Error ? error.message : String(error)] };
+  }
+  return {
+    contents: stripped,
+    conflicts: packageManifestHandler.validateAdjusted?.("package.json", stripped) ?? [],
   };
-  return { preset: candidate, conflicts };
+}
+
+// Pack-time selection uses the shared structural machinery: each excluded
+// package is omitted from the captured artifact through the manifest
+// handler's own adjust, and only the final adjusted artifact is persisted —
+// never an original plus a self-omit.
+function applyExcludes(
+  contents: string,
+  excludes: string[],
+): { contents: string; conflicts: string[] } {
+  const conflicts: string[] = [];
+  let adjusted = contents;
+  for (const name of excludes) {
+    let omitted = false;
+    for (const selector of [mapField("dependencies"), mapField("devDependencies")]) {
+      if (lookupMap(json(adjusted, "package.json"), selector).state !== "found") continue;
+      const result = packageManifestHandler.adjust("package.json", adjusted, {
+        op: "omit",
+        selector: selector.name,
+        entry: name,
+      });
+      if (result.conflicts.length) continue;
+      adjusted = result.contents;
+      omitted = true;
+    }
+    if (!omitted) conflicts.push(`Excluded package is not in the manifest: ${name}`);
+  }
+  return { contents: adjusted, conflicts };
+}
+
+// Pack a project into a leaf durable recipe: the captured manifest plus
+// explicitly included files. Excludes select within the captured artifact;
+// nothing is inferred about recipe ancestry (projects carry no provenance).
+export async function packRecipe(
+  cwd: string,
+  name: string,
+  includes: string[],
+  excludes: string[],
+): Promise<{ recipe?: PackedRecipe; conflicts: string[] }> {
+  const gate = packableConflicts(await inspectProject(cwd));
+  if (gate.length) return { conflicts: gate };
+  const manifest = await captureManifest(cwd);
+  if (manifest.contents === undefined) return { conflicts: manifest.conflicts };
+  const selection = applyExcludes(manifest.contents, excludes);
+  const included = await collectIncludedFiles(cwd, includes);
+  const conflicts = [...manifest.conflicts, ...selection.conflicts, ...included.conflicts];
+  if (included.files.some((file) => file.path === "package.json"))
+    conflicts.push("package.json is always captured; do not pass it to --include.");
+  if (conflicts.length) return { conflicts };
+  return {
+    recipe: {
+      name,
+      artifacts: [{ path: "package.json", contents: selection.contents }, ...included.files],
+    },
+    conflicts: [],
+  };
 }
 
 // Included files are explicit choices, so they are checked against the
-// denylist and the project boundary even though they never enter the candidate
+// denylist and the project boundary even though they never enter the recipe
 // automatically. Included directories expand into their contained files, so a
-// preset is self-contained and can replay without the source project.
+// recipe is self-contained and can replay without the source project.
 export async function collectIncludedFiles(
   cwd: string,
   includes: string[],
-): Promise<{ files: PresetFile[]; conflicts: string[] }> {
+): Promise<{ files: Artifact[]; conflicts: string[] }> {
   const conflicts: string[] = [];
-  const files: PresetFile[] = [];
+  const files: Artifact[] = [];
   const collect = async (absolute: string, relativePath: string): Promise<void> => {
     const violations = seedPathViolations(relativePath);
     if (violations.length) {
@@ -153,9 +214,9 @@ export async function collectIncludedFiles(
   return { files, conflicts };
 }
 
-// Preset seed paths that arrive as data (a --from candidate, or a preset being
-// replayed) get the same policy without filesystem access.
-export function checkSeedContents(files: PresetFile[]): string[] {
+// Recipe artifact paths that arrive as data (a recipe being replayed) get
+// the same policy without filesystem access.
+export function checkSeedContents(files: Artifact[]): string[] {
   const conflicts: string[] = [];
   for (const file of files) conflicts.push(...seedPathViolations(file.path));
   return conflicts;

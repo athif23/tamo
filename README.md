@@ -5,8 +5,8 @@ Tamo lets coding agents and developers learn, remember, reuse, and evolve how a 
 Implemented so far:
 
 - `tamo inspect` — factual report of a Node/pnpm project's setup (package manager, dependencies, recognized config files, limitations).
-- `tamo pack <name>` — capture the reusable parts of the current project as a reviewed preset under the Tamo home. The source project is never modified.
-- `tamo create <dir> --preset <name>` — replay a saved preset into a new, ordinary project: generated `package.json`, seed files, and a planned `pnpm install`.
+- `tamo pack <name>` — capture the reusable parts of the current project as a reviewed recipe under the Tamo home. The source project is never modified.
+- `tamo create <dir> --recipe <name>` — replay a saved recipe into a new, ordinary project: native artifacts at their original paths (the package name follows the new target) and a planned `pnpm install`.
 - `tamo add effect-oxlint` — add the preferred Effect lint setup to an existing pnpm project while preserving its Oxlint configuration.
 
 ## Tamo home
@@ -15,9 +15,15 @@ All developer-owned state lives under the Tamo home (default `~/.tamo`, relocate
 
 ```text
 ~/.tamo/
-├── presets/     one plain JSON file per preset
-└── extensions/  local extension modules (reusable custom behavior)
+└── recipes/     one directory per recipe (recipe.json plus artifacts/,
+                optionally behavior.mjs — trusted local executable code)
 ```
+
+A recipe's `behavior.mjs`, when present, is imported and executed during
+planning — before any operation is confirmed or applied. Only the fixed
+`behavior.mjs` filename inside the resolved local recipe directory is ever
+loaded; nothing is fetched from the network and no sandboxing is applied.
+Do not store recipes from untrusted sources without reviewing that file.
 
 Projects never carry Tamo metadata; the resulting projects stay ordinary even if Tamo is deleted. Tests isolate global state by setting `TAMO_HOME`.
 
@@ -29,33 +35,27 @@ Requires Node.js 24.15+ and pnpm. Tamo is one TypeScript package; no build step 
 pnpm install
 pnpm --silent tamo inspect --cwd /path/to/project --json
 pnpm tamo pack web --cwd /path/to/project --include tsconfig.json --yes
-pnpm --silent tamo create my-app --preset web --json --yes
+pnpm --silent tamo create my-app --recipe web --json --yes
 pnpm tamo add effect-oxlint --cwd /path/to/project --dry-run
 ```
 
 ### Pack
 
-`pack` inspects the target and builds a preset candidate: manifest dependencies are suggested (`--exclude` drops some), and files are captured only when explicitly included (`--include`; a path may be a file or a directory, which expands into its contained files). Included content is stored inline in the preset, so replay never depends on the source project. Secrets, private keys, generated output, dependency directories, caches, VCS state, and lockfiles are never captured, and including them is rejected; `.env.example` is deliberately allowed as reusable seed content.
+`pack` inspects the target and builds a recipe: the manifest is captured as a native artifact (minus only the source project's `name`), dependencies can be trimmed with `--exclude`, and other files are captured only when explicitly included (`--include`; a path may be a file or a directory, which expands into its contained files). Stored content is native file bytes under `~/.tamo/recipes/<name>/` (`recipe.json` plus `artifacts/` mirroring project paths), so replay never depends on the source project and never re-encodes native configuration. Secrets, private keys, generated output, dependency directories, caches, VCS state, and lockfiles are never captured, and including them is rejected; `.env.example` is deliberately allowed as reusable seed content.
 
-Noninteractive/JSON contract (first-class for agents): `--json --dry-run` prints the candidate with status `dry-run`; without `--yes`, status `confirmation-required` and exit 2; `--yes` saves with status `saved`; conflicts exit 1 with status `blocked`. An agent can edit the printed candidate and save it with `--from <file>`; edited candidates pass the same validation and policy. Repacking over an existing preset requires `--force` and rebuilds the candidate from the current project rather than merging the old preset.
-
-The preset schema is deliberately minimal: `name`, `packageManager`, `dependencies`, `devDependencies`, `files` (`{ path, contents }` seed entries). Presets are plain files and may be hand-edited; seed paths are re-checked against the same safety rules at replay time.
+Noninteractive/JSON contract (first-class for agents): `--json --dry-run` prints the recipe with status `dry-run`; without `--yes`, status `confirmation-required` and exit 2; `--yes` saves with status `saved`; conflicts exit 1 with status `blocked`. Repacking over an existing recipe requires `--force` and rebuilds from the current project rather than merging the old recipe.
 
 ### Create
 
 ```sh
-pnpm tamo create <dir> --preset <name>
+pnpm tamo create <dir> --recipe <name>
 ```
 
-Replays a preset into a new ordinary project: a generated `package.json` (the target directory name becomes the package name; the preset's package manager and dependency sets are carried over; nothing else is invented), the seed files at their original relative paths, then a planned, visible `pnpm install`. Existing non-empty targets are blocked, never overwritten, and the result carries no Tamo metadata. The same `--dry-run`/`--json`/`--yes` contract applies: planning never mutates, noninteractive runs need `--yes`, and execution reports completed and remaining operations on failure. Not supported yet: `--with`/`--without` overrides, upstream CLI steps (e.g. `shadcn init`), and extension references — so framework-heavy presets replay as dependency-complete but unscaffolded projects.
+Replays a recipe into a new ordinary project through the same Core planning path as `add`: native artifacts materialize at their original relative paths (the package name follows the new target directory; nothing else is invented), then a planned, visible `pnpm install`. When a recipe's behavior must generate the target first (an upstream initializer), `create` reviews and applies that preparation plan on its own, then replans from fresh state — one checkpoint at most — and the created package name still follows the target while generated state is preserved. Pre-existing non-empty targets are blocked, never overwritten, and the result carries no Tamo metadata. The same `--dry-run`/`--json`/`--yes` contract applies: planning never mutates, noninteractive runs need `--yes`, and execution reports completed and remaining operations on failure. Not supported yet: `--with`/`--without` overrides.
 
-### Extensions
+### Add
 
-Extensions provide reusable custom behavior when Tamo's generic primitives (dependencies, files, official CLIs) are insufficient — for example the built-in Effect Oxlint integration with its compatibility checks, additive JSONC mutation, patch command, and custom plugin. Each TypeScript module in `<Tamo home>/extensions` default-exports one extension or an array of extensions on the same plain-TypeScript interface as built-ins, and `tamo add <extension-id>` resolves them exactly like built-ins. Loading a module runs its code; only place extensions you trust there. Projects are never configured to load code.
-
-```text
-~/.tamo/extensions/my-setup.ts
-```
+`tamo add <recipe>` applies reusable setup to an existing project through recipes, artifact handlers, and Core planning. Every recipe — including `effect-oxlint` — is an ordinary durable recipe under `~/.tamo/recipes`: compatibility checks, additive config contribution that preserves unrelated settings, the install/patch command orchestration, and the custom plugin run through recipe-local `behavior.mjs`. Saved recipes resolve by name and may include other recipes with persistent omit customizations. When a recipe needs an upstream command to run before handlers can plan against its output, `add` reviews and applies that preparation plan first, then replans from fresh state; plans carry `requiresReplan: true` until the final stage. Projects are never configured to load Tamo code.
 
 For machine-readable output, suppress pnpm's script banner:
 
@@ -70,7 +70,7 @@ On Windows, launch through `pnpm tamo`; the process runner uses pnpm's known Jav
 ## Supported scope
 
 - **inspect / pack / create**: one ordinary Node/pnpm project with a local `package.json`; a declared `packageManager` is reported. Workspaces, Rust/Cargo, and other ecosystems are future scope (a workspace or Cargo manifest produces an explicit note).
-- **add effect-oxlint**: one local pnpm project with `packageManager` declared in `package.json`; Effect `4.0.0-rc.112` and Oxlint `1.80.0` already declared and installed; exactly one `.oxlintrc.json` or `.oxlintrc.jsonc`; relative JSON/JSONC inherited configs without inherited plugin lists, options, or overrides. Existing unrelated rules and overrides are preserved; differing required values block application. The integration installs missing integration dependencies at supported versions, patches installed tooling through a reviewed command, and adds `.config/oxlint/tamo-effect.ts` — a local plugin with no dependency on Tamo. Validation runs isolated lint probes and cleans them up.
+- **add with an effect-oxlint recipe**: one local pnpm project with `packageManager` declared in `package.json`; Effect `4.0.0-rc.112` and Oxlint `1.80.0` already declared and installed; exactly one `.oxlintrc.json` or `.oxlintrc.jsonc`; relative JSON/JSONC inherited configs without inherited plugin lists, options, or overrides. Existing unrelated rules and overrides are preserved; differing required values block application. The integration installs missing integration dependencies at supported versions, patches installed tooling through a reviewed command, and adds `.config/oxlint/tamo-effect.ts` — a local plugin with no dependency on Tamo. Validation runs isolated lint probes and cleans them up.
 
 Inputs are fingerprinted before review and rechecked before execution. Execution is sequential. A failure reports completed and remaining operations; external commands may have partially changed files, and automatic rollback is not provided. Replan before retrying.
 
@@ -84,8 +84,8 @@ pnpm format
 pnpm test:integration
 ```
 
-`check` runs TypeScript, Tamo's own Effect/Oxlint configuration, oxfmt's format check, and focused tests. Tamo's own lint setup also includes the curated general rules (vendored [anti-slop](https://github.com/dmmulroy/anti-slop) subset and `oxlint-plugin-complexity`); `pnpm format` formats the TypeScript sources with [oxfmt](https://oxc.rs/docs/guide/usage/formatter.html). The bundled `src/features/effect-oxlint/plugin.ts` is excluded from formatting because its contents are compared byte-for-byte against target projects. The integration test creates a temporary project from `test/fixtures/project`, installs real dependencies, exercises the CLI, and cleans it up. It may require registry access.
+`check` runs TypeScript, Tamo's own Effect/Oxlint configuration, oxfmt's format check, and focused tests. Tamo's own lint setup also includes the curated general rules (vendored [anti-slop](https://github.com/dmmulroy/anti-slop) subset and `oxlint-plugin-complexity`); `pnpm format` formats the TypeScript sources with [oxfmt](https://oxc.rs/docs/guide/usage/formatter.html). The canonical effect-oxlint recipe lives at `test/fixtures/effect-oxlint` (`recipe.json` plus self-contained `behavior.mjs` plus `artifacts/`, including the custom plugin); its plugin bytes are asserted byte-for-byte against what Core plans, so the fixture is never reformatted. The integration test creates a temporary project from `test/fixtures/project`, installs real dependencies, exercises the CLI, and cleans it up. It may require registry access.
 
-`src/plan.ts` contains the shared extension/plan types. `src/runtime.ts` executes plans through Effect. `src/inspect.ts` is the factual inspection, `src/preset.ts` the preset schema and Tamo-home storage, `src/pack.ts` the capture candidate and safety policy, and `src/create.ts` the replay planner; the built-in extension owns its inspection, additive config edits, and validation in `src/features/effect-oxlint.ts`. There is no extension-level apply hook.
+`src/plan.ts` contains the shared plan/operation types. `src/runtime.ts` executes reviewed plans through Effect. `src/compose.ts` owns recipe resolution, planning, and verification; `src/handler.ts` and `src/handlers/` carry artifact semantics; the canonical effect-oxlint recipe (`test/fixtures/effect-oxlint`: `recipe.json`, self-contained `behavior.mjs`, `artifacts/`) carries the Effect procedural behavior as durable recipe data. `src/inspect.ts` is the factual inspection, `src/recipes.ts` the recipe storage under the Tamo home, `src/pack.ts` the capture policy and recipe emit, and `src/create.ts` the replay planner.
 
 See [SPEC.md](SPEC.md) for the contract and [PARKING_LOT.md](PARKING_LOT.md) for deferred work.

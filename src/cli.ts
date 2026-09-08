@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-import { readFile } from "node:fs/promises";
 import { parseArgs } from "node:util";
 import { relative, resolve } from "node:path";
 import * as Cause from "effect/Cause";
@@ -7,48 +6,61 @@ import * as Effect from "effect/Effect";
 import * as Terminal from "effect/Terminal";
 import { runMain } from "@effect/platform-node/NodeRuntime";
 import { layer as nodeServices } from "@effect/platform-node/NodeServices";
-import { effectOxlint } from "./features/effect-oxlint.ts";
-import { loadExtensions, resolveExtension } from "./extensions.ts";
 import { tamoHome } from "./home.ts";
-import { planCreate } from "./create.ts";
+import { planCreate, verifyCreate } from "./create.ts";
 import { inspectProject, type Inspection } from "./inspect.ts";
-import { buildCandidate, checkSeedContents, collectIncludedFiles } from "./pack.ts";
-import { presetPath, savePreset, validatePreset, type Preset } from "./preset.ts";
-import { executeEffect, read, type ApplyResult } from "./runtime.ts";
-import type { Extension, Plan } from "./plan.ts";
+import { packRecipe, type PackedRecipe } from "./pack.ts";
+import { loadAllRecipes, recipeDir, saveRecipe } from "./recipes.ts";
+import { entryType, executePlan, read, type ApplyResult } from "./runtime.ts";
+import type { Operation, Plan } from "./plan.ts";
+import {
+  applyRecipeWithReplan,
+  planComposition,
+  verifyComposition,
+  type CompositionInput,
+  type Recipe,
+} from "./compose.ts";
+import { packageManifestHandler } from "./handlers/package-manifest.ts";
+import { oxlintConfigHandler } from "./handlers/oxlint-config.ts";
 
 function showPlan(plan: Plan) {
-  console.log(`${plan.extension} in ${plan.cwd}`);
+  console.log(`${plan.subject} in ${plan.cwd}`);
 
   for (const evidence of plan.evidence) console.log(`  ${evidence}`);
   for (const conflict of plan.conflicts) console.log(`BLOCKED: ${conflict}`);
   if (!plan.operations.length && !plan.conflicts.length) console.log("No changes needed.");
 
-  for (const operation of plan.operations) {
-    if (operation.kind === "command") {
-      console.log(
-        `\nRun: ${operation.executable} ${operation.args.map((arg) => JSON.stringify(arg)).join(" ")}\n  ${operation.purpose}`,
-      );
-    } else {
-      console.log(
-        `\n${operation.before === null ? "Create" : "Edit"}: ${relative(plan.cwd, operation.path)}`,
-      );
-      if (operation.before !== null)
-        console.log(
-          operation.before
-            .split(/\r?\n/)
-            .map((line) => `- ${line}`)
-            .join("\n"),
-        );
-      console.log(
-        operation.after
-          .split(/\r?\n/)
-          .map((line) => `+ ${line}`)
-          .join("\n"),
-      );
-    }
-  }
+  for (const operation of plan.operations) showOperation(plan, operation);
+  if (plan.requiresReplan)
+    console.log(
+      "\nRequires replan: executing this plan changes project state; review a fresh plan afterwards.",
+    );
   console.log(`\nValidate: ${plan.validation.join("; ")}`);
+}
+
+function showOperation(plan: Plan, operation: Operation) {
+  if (operation.kind === "command") {
+    console.log(
+      `\nRun: ${operation.executable} ${operation.args.map((arg) => JSON.stringify(arg)).join(" ")}\n  ${operation.purpose}`,
+    );
+    return;
+  }
+  console.log(
+    `\n${operation.before === null ? "Create" : "Edit"}: ${relative(plan.cwd, operation.path)}`,
+  );
+  if (operation.before !== null)
+    console.log(
+      operation.before
+        .split(/\r?\n/)
+        .map((line) => `- ${line}`)
+        .join("\n"),
+    );
+  console.log(
+    operation.after
+      .split(/\r?\n/)
+      .map((line) => `+ ${line}`)
+      .join("\n"),
+  );
 }
 
 function showInspection(inspection: Inspection) {
@@ -73,19 +85,10 @@ function showInspection(inspection: Inspection) {
   for (const note of inspection.notes) console.log(`Note: ${note}`);
 }
 
-function showPreset(preset: Preset, target: string) {
-  console.log(`Preset: ${preset.name}`);
-  console.log(`Package manager: ${preset.packageManager}`);
-  const list = (section: Record<string, string>) =>
-    Object.entries(section)
-      .map(([name, version]) => `${name}@${version}`)
-      .join(", ");
-  const dependencies = list(preset.dependencies);
-  const devDependencies = list(preset.devDependencies);
-  if (dependencies) console.log(`Dependencies: ${dependencies}`);
-  if (devDependencies) console.log(`Dev dependencies: ${devDependencies}`);
+function showRecipe(recipe: PackedRecipe, target: string) {
+  console.log(`Recipe: ${recipe.name}`);
   console.log(
-    `Reusable files: ${preset.files.length ? preset.files.map((file) => file.path).join(", ") : "(none)"}`,
+    `Artifacts: ${recipe.artifacts.length ? recipe.artifacts.map((file) => file.path).join(", ") : "(none)"}`,
   );
   console.log(`Save to: ${target}`);
 }
@@ -122,68 +125,40 @@ function reportResult(values: { json?: boolean }, plan: Plan, result: ApplyResul
     );
 }
 
-// Registry lookup combines built-ins with the developer's Tamo home extensions.
-async function selectExtension(
-  positionals: string[],
-  cwdFlag: string | undefined,
-): Promise<{ cwd: string; extension: Extension }> {
-  if (positionals.length !== 2 || positionals[0] !== "add")
-    throw new Error("Expected: tamo add <extension>. Use --help for supported options.");
-  const cwd = resolve(cwdFlag ?? ".");
-  const extension = resolveExtension(
-    positionals[1],
-    [effectOxlint],
-    await loadExtensions(tamoHome()),
-  );
-  return { cwd, extension };
-}
-
-async function candidateFromInspection(
+// Recipe lookup for `tamo add`: durable home recipes resolved through the
+// one Core path. Every name — including effect-oxlint — is an ordinary
+// durable recipe; there is no privileged built-in.
+async function planRecipe(
+  home: string,
   name: string,
   cwd: string,
-  includes: string[],
-  excludes: string[],
-): Promise<{ preset?: Preset; conflicts: string[] }> {
-  const inspection = await inspectProject(cwd);
-  const candidate = buildCandidate(inspection, excludes);
-  // Unsupported projects report their conflicts instead of failing candidate
-  // validation against a half-built preset.
-  if (candidate.conflicts.length) return { conflicts: candidate.conflicts };
-  const included = await collectIncludedFiles(cwd, includes);
-  const preset = validatePreset(
-    { ...candidate.preset, name, files: included.files },
-    `pack ${name}`,
-  );
-  return { preset, conflicts: included.conflicts };
+): Promise<{ input?: CompositionInput; plan?: Plan; conflicts: string[] }> {
+  const loaded = await loadAllRecipes(home);
+  if (loaded.conflicts.length) return { conflicts: loaded.conflicts };
+  const recipes = loaded.recipes;
+  if (!recipes[name])
+    throw new Error(
+      `Unknown recipe: ${name}. Available: ${Object.keys(recipes).sort().join(", ")}`,
+    );
+  const input = recipeInput(cwd, recipes, name);
+  const prepared = await planComposition(input);
+  if (!prepared.plan) return { input, conflicts: prepared.conflicts };
+  prepared.plan.inputs = [...prepared.plan.inputs, ...loaded.snapshots];
+  return { input, plan: prepared.plan, conflicts: [] };
 }
 
-async function candidateFromFile(
-  name: string,
+function recipeInput(
   cwd: string,
-  from: string,
-  includes: string[],
-): Promise<{ preset: Preset; conflicts: string[] }> {
-  let value: unknown;
-  try {
-    value = JSON.parse(await readFile(from, "utf8"));
-  } catch (error) {
-    throw new Error(`Candidate file must contain JSON: ${from} (${String(error)})`);
-  }
-  const parsed = validatePreset(value, from);
-  const seedConflicts = checkSeedContents(parsed.files);
-  const included = await collectIncludedFiles(cwd, includes);
+  recipes: Record<string, Recipe>,
+  entry: string,
+): CompositionInput {
   return {
-    preset: validatePreset(
-      { ...parsed, name, files: [...parsed.files, ...included.files] },
-      `pack ${name}`,
-    ),
-    conflicts: [
-      ...(parsed.name === name
-        ? []
-        : [`Candidate name "${parsed.name}" does not match "${name}".`]),
-      ...seedConflicts,
-      ...included.conflicts,
-    ],
+    cwd,
+    recipes,
+    entry,
+    invocation: [],
+    handlers: [packageManifestHandler, oxlintConfigHandler],
+    read,
   };
 }
 
@@ -194,27 +169,29 @@ async function preparePack(
   values: {
     cwd?: string;
     force?: boolean;
-    from?: string;
     include?: string[];
     exclude?: string[];
   },
-): Promise<{ home: string; target: string; preset?: Preset; conflicts: string[] }> {
+): Promise<{ home: string; target: string; recipe?: PackedRecipe; conflicts: string[] }> {
   if (positionals.length !== 2 || !positionals[1])
-    throw new Error("Expected: tamo pack <preset-name>. Use --help for supported options.");
+    throw new Error("Expected: tamo pack <recipe-name>. Use --help for supported options.");
   const name = positionals[1];
   const cwd = resolve(values.cwd ?? ".");
   const home = tamoHome();
-  const target = presetPath(home, name);
+  const target = recipeDir(home, name);
 
-  const candidate = values.from
-    ? await candidateFromFile(name, cwd, resolve(values.from), values.include ?? [])
-    : await candidateFromInspection(name, cwd, values.include ?? [], values.exclude ?? []);
-
-  if ((await read(target)) !== null && !values.force)
-    candidate.conflicts.push(
-      `Preset '${name}' already exists at ${target}; pass --force to replace it.`,
-    );
-  return { home, target, preset: candidate.preset, conflicts: candidate.conflicts };
+  const packed = await packRecipe(cwd, name, values.include ?? [], values.exclude ?? []);
+  if (!packed.recipe) return { home, target, conflicts: packed.conflicts };
+  if ((await entryType(target)) !== null && !values.force)
+    return {
+      home,
+      target,
+      conflicts: [
+        ...packed.conflicts,
+        `Recipe '${name}' already exists at ${target}; pass --force to replace it.`,
+      ],
+    };
+  return { home, target, recipe: packed.recipe, conflicts: packed.conflicts };
 }
 
 const HELP = `tamo <command> [options]
@@ -223,27 +200,24 @@ Commands:
   inspect [--cwd path] [--json]
       Report the factual setup of the target project: package manager,
       dependencies, recognized config files, and limitations.
-  pack <preset-name> [--cwd path] [--include path]... [--exclude package]...
-        [--from candidate.json] [--force] [--dry-run] [--json] [--yes]
-      Capture the reusable parts of the current project as a preset under the
-      Tamo home. Dependencies from the manifest are suggested; files are only
-      captured when explicitly included. Secrets, generated output, dependency
-      directories, caches, and lockfiles are never captured. The source project
-      is never modified. A reviewed agent can edit a --dry-run --json candidate
-      and save it with --from.
-  create <dir> --preset <name> [--cwd path] [--dry-run] [--json] [--yes]
-      Create a new ordinary project from a saved preset: a generated
-      package.json (package manager and dependency sets), the preset's seed
-      files at their original relative paths, and a planned pnpm install.
-      Existing non-empty targets are never overwritten; the result carries no
-      Tamo metadata.
-  add <extension> [--cwd path] [--dry-run] [--json] [--yes]
-      Apply reusable custom behavior to an existing project. Built-in
-      extension: effect-oxlint (requires an existing pnpm project with Effect
-      4.0.0-rc.112 and Oxlint 1.80.0). Additional extensions load from
-      <Tamo home>/extensions.
+  pack <recipe-name> [--cwd path] [--include path]... [--exclude package]...
+        [--force] [--dry-run] [--json] [--yes]
+      Capture the reusable parts of the current project as a recipe under the
+      Tamo home: the manifest as a native artifact plus explicitly included
+      files. Secrets, generated output, dependency directories, caches, and
+      lockfiles are never captured. The source project is never modified.
+  create <dir> --recipe <name> [--cwd path] [--dry-run] [--json] [--yes]
+      Create a new ordinary project from a saved recipe: its native artifacts
+      at their original relative paths (the package name follows the new
+      target), and a planned pnpm install. Existing non-empty targets are
+      never overwritten; the result carries no Tamo metadata.
+  add <recipe> [--cwd path] [--dry-run] [--json] [--yes]
+      Apply reusable setup from a saved recipe to an existing project
+      through recipes, artifact handlers, and Core planning. For example,
+      an effect-oxlint recipe requires an existing pnpm project with Effect
+      4.0.0-rc.112 and Oxlint 1.80.0.
 
-Developer state (presets, extensions) lives under the Tamo home directory
+Developer state (recipes) lives under the Tamo home directory
 (default ~/.tamo); set TAMO_HOME to relocate it.
 On Windows: pnpm tamo <command> ...`;
 
@@ -253,12 +227,11 @@ const main = Effect.gen(function* () {
     options: {
       cwd: { type: "string" },
       "dry-run": { type: "boolean" },
-      from: { type: "string" },
       force: { type: "boolean" },
       include: { type: "string", multiple: true },
       exclude: { type: "string", multiple: true },
       json: { type: "boolean" },
-      preset: { type: "string" },
+      recipe: { type: "string" },
       yes: { type: "boolean" },
       help: { type: "boolean", short: "h" },
     },
@@ -294,7 +267,6 @@ function* packCommand(
     "dry-run"?: boolean;
     yes?: boolean;
     force?: boolean;
-    from?: string;
     include?: string[];
     exclude?: string[];
   },
@@ -304,90 +276,207 @@ function* packCommand(
     reportBlocked(prepared.conflicts, values.json ?? false);
     return;
   }
-  // SAFETY: preparePack returns a preset unless its conflicts are nonempty, which is handled above.
-  const preset = prepared.preset!;
-  if (!values.json) showPreset(preset, prepared.target);
+  // SAFETY: preparePack returns a recipe unless its conflicts are nonempty, which is handled above.
+  const recipe = prepared.recipe!;
+  if (!values.json) showRecipe(recipe, prepared.target);
   if (values["dry-run"]) {
-    if (values.json) console.log(JSON.stringify({ preset, status: "dry-run" }));
+    if (values.json) console.log(JSON.stringify({ recipe, status: "dry-run" }));
     return;
   }
   if (
     !values.yes &&
-    !(yield* confirm(`Save preset '${preset.name}'?`, values.json ?? false, {
-      preset,
+    !(yield* confirm(`Save recipe '${recipe.name}'?`, values.json ?? false, {
+      recipe,
       target: prepared.target,
     }))
   )
     return;
-  const path = yield* Effect.promise(() => savePreset(prepared.home, preset));
-  if (values.json) console.log(JSON.stringify({ preset, status: "saved", path }));
-  else console.log(`Saved preset '${preset.name}' to ${path}`);
+  const path = yield* Effect.promise(() =>
+    saveRecipe(prepared.home, recipe.name, recipe.artifacts),
+  );
+  if (values.json) console.log(JSON.stringify({ recipe, status: "saved", path }));
+  else console.log(`Saved recipe '${recipe.name}' to ${path}`);
 }
 
+// Review one create plan: render it, stop honestly on dry-run, confirm
+// otherwise. Mirrors the staged add review so both commands report staged
+// plans the same way; the create dry-run keeps its `{ plan, status:
+// "dry-run" }` shape, shows only the currently knowable plan, and never
+// executes or fabricates the next stage.
+async function reviewCreatePlan(
+  plan: Plan,
+  isPreparation: boolean,
+  values: { json?: boolean; "dry-run"?: boolean; yes?: boolean },
+  target: string,
+): Promise<boolean> {
+  const json = values.json ?? false;
+  if (!json) showPlan(plan);
+  if (values["dry-run"] ?? false) {
+    if (json) console.log(JSON.stringify({ plan, status: "dry-run" }));
+    return false;
+  }
+  if (values.yes ?? false) return true;
+  // Entry point: confirmation from a plain callback runs as its own root
+  // fiber with the Node services, mirroring the runtime boundary.
+  return Effect.runPromise(
+    // oxlint-disable-next-line effecttsgo/strict-effect-provide
+    Effect.provide(
+      confirm(`Apply this ${isPreparation ? "preparation " : ""}plan?`, json, {
+        plan,
+        target,
+      }),
+      nodeServices,
+    ),
+  );
+}
+
+// `tamo create <dir> --recipe <name>`: plan fresh, review, execute, and —
+// when the reviewed plan requires it — plan again from fresh state and
+// apply the final plan the same way, reusing the one-checkpoint
+// orchestration shared with `add`. The initial guard rejects a populated
+// target; the fresh stage-2 pass runs inside the same workflow after
+// preparation intentionally populated it. Both stages render and report
+// independently; a failed or declined stage stops the sequence.
 function* createCommand(
   positionals: string[],
-  values: { cwd?: string; json?: boolean; "dry-run"?: boolean; yes?: boolean; preset?: string },
+  values: { cwd?: string; json?: boolean; "dry-run"?: boolean; yes?: boolean; recipe?: string },
 ) {
   const targetArgument = positionals[1];
-  const presetName = values.preset;
-  if (positionals.length !== 2 || !targetArgument || !presetName)
+  const recipeName = values.recipe;
+  if (positionals.length !== 2 || !targetArgument || !recipeName)
     throw new Error(
-      "Expected: tamo create <dir> --preset <name>. Use --help for supported options.",
+      "Expected: tamo create <dir> --recipe <name>. Use --help for supported options.",
     );
-  const prepared = yield* Effect.promise(() =>
-    planCreate(tamoHome(), resolve(values.cwd ?? "."), targetArgument, presetName),
-  );
-  if (prepared.conflicts.length) {
-    reportBlocked(prepared.conflicts, values.json ?? false);
-    return;
-  }
-  // SAFETY: planCreate returns a plan unless its conflicts are nonempty, which is handled above.
-  const plan = prepared.plan!;
-  const extension = prepared.extension!;
-  if (!values.json) showPlan(plan);
-  if (values["dry-run"]) {
-    if (values.json) console.log(JSON.stringify({ plan, status: "dry-run" }));
-    return;
-  }
-  if (
-    !values.yes &&
-    !(yield* confirm(
-      `Create '${targetArgument}' from preset '${presetName}'?`,
-      values.json ?? false,
-      {
-        plan,
-        target: prepared.target,
+  const home = tamoHome();
+  const cwd = resolve(values.cwd ?? ".");
+  let freshPlans = 0;
+  let target = resolve(cwd, targetArgument);
+  const outcome = yield* Effect.promise(() =>
+    applyRecipeWithReplan({
+      planFresh: async () => {
+        freshPlans++;
+        const prepared = await planCreate(home, cwd, targetArgument, recipeName, {
+          allowPopulatedTarget: freshPlans > 1,
+        });
+        target = prepared.target;
+        return prepared;
       },
-    ))
-  )
+      review: (plan, isPreparation) => reviewCreatePlan(plan, isPreparation, values, target),
+      execute: (plan) => executePlan(plan),
+      verify: (input) => verifyCreate(input, target),
+    }),
+  );
+  if (outcome.status === "blocked") {
+    reportBlocked(outcome.conflicts, values.json ?? false);
     return;
-  const result = yield* executeEffect(plan, extension);
-  reportResult(values, plan, result);
-  if (result.status !== "applied") process.exitCode = 1;
+  }
+  if (outcome.status === "aborted") return;
+  if (outcome.status === "failed") {
+    reportResult(values, outcome.plan, {
+      status: "failed",
+      completed: outcome.result.completed,
+      remaining: outcome.result.remaining,
+      errors: [...outcome.result.errors, ...outcome.verifyErrors],
+    });
+    process.exitCode = 1;
+    return;
+  }
+  for (const stage of outcome.completed) reportResult(values, stage.plan, stage.result);
 }
 
 function* addCommand(
   positionals: string[],
   values: { cwd?: string; json?: boolean; "dry-run"?: boolean; yes?: boolean },
 ) {
-  const { cwd, extension } = yield* Effect.promise(() => selectExtension(positionals, values.cwd));
-  const plan = yield* Effect.promise(() => extension.plan({ cwd, read }));
+  if (positionals.length !== 2 || positionals[0] !== "add" || !positionals[1])
+    throw new Error("Expected: tamo add <recipe>. Use --help for supported options.");
+  return yield* addRecipeCommand(positionals[1], values);
+}
 
-  if (!values.json) showPlan(plan);
-  if (plan.conflicts.length || values["dry-run"]) {
-    if (values.json) console.log(JSON.stringify({ plan }));
-    if (plan.conflicts.length) process.exitCode = 1;
+// Preserve the legacy `{ plan }` JSON shape for blocked adds: a reviewable
+// plan with zero operations carrying the blocking conflicts.
+function reportBlockedRecipePlan(
+  cwd: string,
+  name: string,
+  conflicts: string[],
+  json: boolean,
+): void {
+  const blocked: Plan = {
+    subject: `recipe:${name}`,
+    cwd,
+    inputs: [],
+    evidence: [],
+    conflicts,
+    operations: [],
+    validation: ["Check contributed entries are present in the target artifacts"],
+    requiresReplan: false,
+  };
+  if (!json) showPlan(blocked);
+  else console.log(JSON.stringify({ plan: blocked }));
+  process.exitCode = 1;
+}
+
+// Review one add plan: render it, stop honestly on dry-run, confirm
+// otherwise. Runs as a plain promise so the staged orchestration can call
+// it; confirmation runs its own root fiber with the Node services.
+async function reviewAddPlan(
+  plan: Plan,
+  isPreparation: boolean,
+  values: { json?: boolean; "dry-run"?: boolean; yes?: boolean },
+): Promise<boolean> {
+  const json = values.json ?? false;
+  if (!json) showPlan(plan);
+  if (values["dry-run"] ?? false) {
+    if (json) console.log(JSON.stringify({ plan }));
+    return false;
+  }
+  if (values.yes ?? false) return true;
+  // Entry point: confirmation from a plain callback runs as its own root
+  // fiber with the Node services, mirroring the runtime boundary.
+  return Effect.runPromise(
+    // oxlint-disable-next-line effecttsgo/strict-effect-provide
+    Effect.provide(
+      confirm(`Apply this ${isPreparation ? "preparation " : ""}plan?`, json, { plan }),
+      nodeServices,
+    ),
+  );
+}
+
+// `tamo add <recipe>`: plan fresh, review, execute, and — when the reviewed
+// plan requires it — plan again from fresh state and apply the final plan
+// the same way. Both stages render and report independently; a failed or
+// declined stage stops the sequence.
+function* addRecipeCommand(
+  name: string,
+  values: { cwd?: string; json?: boolean; "dry-run"?: boolean; yes?: boolean },
+) {
+  const cwd = resolve(values.cwd ?? ".");
+  const home = tamoHome();
+  const json = values.json ?? false;
+  const outcome = yield* Effect.promise(() =>
+    applyRecipeWithReplan({
+      planFresh: () => planRecipe(home, name, cwd),
+      review: (plan, isPreparation) => reviewAddPlan(plan, isPreparation, values),
+      execute: (plan) => executePlan(plan),
+      verify: (input) => verifyComposition(input),
+    }),
+  );
+  if (outcome.status === "blocked") {
+    reportBlockedRecipePlan(cwd, name, outcome.conflicts, json);
     return;
   }
-
-  if (!values.yes) {
-    if (!(yield* confirm("Apply this plan?", values.json ?? false, { plan }))) return;
+  if (outcome.status === "aborted") return;
+  if (outcome.status === "failed") {
+    reportResult(values, outcome.plan, {
+      status: "failed",
+      completed: outcome.result.completed,
+      remaining: outcome.result.remaining,
+      errors: [...outcome.result.errors, ...outcome.verifyErrors],
+    });
+    process.exitCode = 1;
+    return;
   }
-
-  const result = yield* executeEffect(plan, extension);
-
-  reportResult(values, plan, result);
-  if (result.status !== "applied") process.exitCode = 1;
+  for (const stage of outcome.completed) reportResult(values, stage.plan, stage.result);
 }
 
 // Interruption (Ctrl+C) unwinds the fiber so running installs are killed and

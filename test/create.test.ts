@@ -5,28 +5,39 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { planCreate } from "../src/create.ts";
-import { savePreset, validatePreset } from "../src/preset.ts";
-import { execute } from "../src/runtime.ts";
+import { saveRecipe } from "../src/recipes.ts";
+import { executePlan } from "../src/runtime.ts";
 
 const root = resolve(".");
 
-const preset = {
-  name: "sample",
-  packageManager: "pnpm@10.11.0",
-  dependencies: {},
-  devDependencies: {},
-  files: [
-    { path: "tsconfig.json", contents: '{"compilerOptions":{"strict":true}}\n' },
-    { path: "src/utils/cn.ts", contents: 'export const cn = (...p: string[]) => p.join("");\n' },
-    { path: ".env.example", contents: "SECRET_KEY=\n" },
-  ],
-};
+// The packed source project is named "source"; create must stamp the target
+// name instead. Non-dependency fields ride along verbatim.
+const manifestArtifact = JSON.stringify(
+  {
+    name: "source",
+    private: true,
+    type: "module",
+    packageManager: "pnpm@10.11.0",
+    scripts: { build: "tsc" },
+    dependencies: {},
+    devDependencies: {},
+  },
+  null,
+  2,
+);
+
+const recipeArtifacts = [
+  { path: "package.json", contents: `${manifestArtifact}\n` },
+  { path: "tsconfig.json", contents: '{"compilerOptions":{"strict":true}}\n' },
+  { path: "src/utils/cn.ts", contents: 'export const cn = (...p: string[]) => p.join("");\n' },
+  { path: ".env.example", contents: "SECRET_KEY=\n" },
+];
 
 async function withHomeAndWorkspace(run: (home: string, workspace: string) => Promise<void>) {
   const home = await mkdtemp(join(tmpdir(), "tamo-create-home-"));
   const workspace = await mkdtemp(join(tmpdir(), "tamo-create-ws-"));
   try {
-    await savePreset(home, validatePreset(preset, "test"));
+    await saveRecipe(home, "sample", recipeArtifacts);
     await run(home, workspace);
   } finally {
     await rm(home, { recursive: true, force: true });
@@ -46,15 +57,19 @@ function runCli(args: string[], home: string) {
 test("dry-run plans the project but creates nothing", async () => {
   await withHomeAndWorkspace(async (home, workspace) => {
     const dry = runCli(
-      ["create", "new-app", "--preset", "sample", "--cwd", workspace, "--json", "--dry-run"],
+      ["create", "new-app", "--recipe", "sample", "--cwd", workspace, "--json", "--dry-run"],
       home,
     );
     assert.equal(dry.code, 0, dry.stderr);
     const result = JSON.parse(dry.stdout);
     assert.equal(result.status, "dry-run");
-    assert.equal(result.plan.extension, "create");
+    assert.equal(result.plan.subject, "recipe:sample");
     const kinds = result.plan.operations.map((operation: { kind: string }) => operation.kind);
     assert.deepEqual(kinds, ["write", "write", "write", "write", "command"]);
+    const manifest = result.plan.operations.find((operation: { path: string }) =>
+      operation.path.endsWith("package.json"),
+    );
+    assert.equal(JSON.parse(manifest.after).name, "new-app");
     assert.equal(await readdir(workspace).then((entries) => entries.length), 0);
   });
 });
@@ -62,7 +77,7 @@ test("dry-run plans the project but creates nothing", async () => {
 test("noninteractive create without --yes asks for confirmation and creates nothing", async () => {
   await withHomeAndWorkspace(async (home, workspace) => {
     const unconfirmed = runCli(
-      ["create", "new-app", "--preset", "sample", "--cwd", workspace, "--json"],
+      ["create", "new-app", "--recipe", "sample", "--cwd", workspace, "--json"],
       home,
     );
     assert.equal(unconfirmed.code, 2);
@@ -71,10 +86,10 @@ test("noninteractive create without --yes asks for confirmation and creates noth
   });
 });
 
-test("create builds an ordinary project: manifest, seeds, install, no Tamo metadata", async () => {
+test("create builds an ordinary project: manifest, native files, install, no Tamo metadata", async () => {
   await withHomeAndWorkspace(async (home, workspace) => {
     const created = runCli(
-      ["create", "new-app", "--preset", "sample", "--cwd", workspace, "--json", "--yes"],
+      ["create", "new-app", "--recipe", "sample", "--cwd", workspace, "--json", "--yes"],
       home,
     );
     assert.equal(created.code, 0, created.stderr);
@@ -86,11 +101,25 @@ test("create builds an ordinary project: manifest, seeds, install, no Tamo metad
     const manifest = JSON.parse(await readFile(join(target, "package.json"), "utf8"));
     assert.deepEqual(manifest, {
       name: "new-app",
+      private: true,
+      type: "module",
       packageManager: "pnpm@10.11.0",
+      scripts: { build: "tsc" },
+      dependencies: {},
+      devDependencies: {},
     });
-    assert.equal(await readFile(join(target, "tsconfig.json"), "utf8"), preset.files[0].contents);
-    assert.equal(await readFile(join(target, "src/utils/cn.ts"), "utf8"), preset.files[1].contents);
-    assert.equal(await readFile(join(target, ".env.example"), "utf8"), preset.files[2].contents);
+    assert.equal(
+      await readFile(join(target, "tsconfig.json"), "utf8"),
+      recipeArtifacts[1]!.contents,
+    );
+    assert.equal(
+      await readFile(join(target, "src/utils/cn.ts"), "utf8"),
+      recipeArtifacts[2]!.contents,
+    );
+    assert.equal(
+      await readFile(join(target, ".env.example"), "utf8"),
+      recipeArtifacts[3]!.contents,
+    );
     assert.notEqual(await readdir(join(target, "node_modules")).catch(() => null), null);
     assert.deepEqual((await readdir(target)).sort(), [
       ".env.example",
@@ -109,7 +138,7 @@ test("an existing non-empty target blocks instead of being overwritten", async (
     await mkdir(target, { recursive: true });
     await writeFile(join(target, "user-file.txt"), "precious");
     const blocked = runCli(
-      ["create", "new-app", "--preset", "sample", "--cwd", workspace, "--json", "--yes"],
+      ["create", "new-app", "--recipe", "sample", "--cwd", workspace, "--json", "--yes"],
       home,
     );
     assert.equal(blocked.code, 1);
@@ -120,21 +149,22 @@ test("an existing non-empty target blocks instead of being overwritten", async (
   });
 });
 
-test("missing and invalid presets block with actionable conflicts", async () => {
+test("missing and invalid recipes block with actionable conflicts", async () => {
   await withHomeAndWorkspace(async (home, workspace) => {
     const missing = runCli(
-      ["create", "app", "--preset", "nope", "--cwd", workspace, "--json", "--yes"],
+      ["create", "app", "--recipe", "nope", "--cwd", workspace, "--json", "--yes"],
       home,
     );
     assert.equal(missing.code, 1);
     const missingResult = JSON.parse(missing.stdout);
     assert.equal(missingResult.status, "blocked");
-    assert.ok(missingResult.conflicts[0].includes("Unknown preset: nope"));
+    assert.ok(missingResult.conflicts[0].includes("Unknown recipe: nope"));
     assert.ok(missingResult.conflicts[0].includes("sample"));
 
-    await writeFile(join(home, "presets", "broken.json"), "{ not json");
+    await mkdir(join(home, "recipes", "broken"), { recursive: true });
+    await writeFile(join(home, "recipes", "broken", "recipe.json"), "{ not json");
     const invalid = runCli(
-      ["create", "app", "--preset", "broken", "--cwd", workspace, "--json", "--yes"],
+      ["create", "app", "--recipe", "broken", "--cwd", workspace, "--json", "--yes"],
       home,
     );
     assert.equal(invalid.code, 1);
@@ -143,17 +173,11 @@ test("missing and invalid presets block with actionable conflicts", async () => 
   });
 });
 
-test("denied seed paths in a hand-edited preset cannot replay", async () => {
+test("denied artifact paths in a hand-edited recipe cannot replay", async () => {
   await withHomeAndWorkspace(async (home, workspace) => {
-    await savePreset(
-      home,
-      validatePreset(
-        { ...preset, name: "sneaky", files: [{ path: ".env", contents: "SECRET=1\n" }] },
-        "test",
-      ),
-    );
+    await saveRecipe(home, "sneaky", [{ path: ".env", contents: "SECRET=1\n" }]);
     const blocked = runCli(
-      ["create", "app", "--preset", "sneaky", "--cwd", workspace, "--json", "--yes"],
+      ["create", "app", "--recipe", "sneaky", "--cwd", workspace, "--json", "--yes"],
       home,
     );
     assert.equal(blocked.code, 1);
@@ -163,29 +187,7 @@ test("denied seed paths in a hand-edited preset cannot replay", async () => {
   });
 });
 
-test("a package.json seed cannot replace the generated manifest", async () => {
-  await withHomeAndWorkspace(async (home, workspace) => {
-    const path = join(home, "presets", "withmanifest.json");
-    await writeFile(
-      path,
-      JSON.stringify({
-        name: "withmanifest",
-        packageManager: "pnpm@10.11.0",
-        dependencies: {},
-        devDependencies: {},
-        files: [{ path: "package.json", contents: "{}" }],
-      }),
-    );
-    const blocked = runCli(
-      ["create", "app", "--preset", "withmanifest", "--cwd", workspace, "--json", "--yes"],
-      home,
-    );
-    assert.equal(blocked.code, 1);
-    assert.ok(JSON.parse(blocked.stdout).conflicts.join("\n").includes("package.json"));
-  });
-});
-
-test("creation never touches the source project the preset was packed from", async () => {
+test("creation never touches the source project the recipe was packed from", async () => {
   await withHomeAndWorkspace(async (home, workspace) => {
     const source = join(workspace, "source");
     await mkdir(join(source, "src"), { recursive: true });
@@ -196,7 +198,7 @@ test("creation never touches the source project the preset was packed from", asy
     await writeFile(join(source, "src", "index.ts"), "export {};\n");
     const listing = await readdir(source);
     const created = runCli(
-      ["create", "new-app", "--preset", "sample", "--cwd", workspace, "--json", "--yes"],
+      ["create", "new-app", "--recipe", "sample", "--cwd", workspace, "--json", "--yes"],
       home,
     );
     assert.equal(created.code, 0, created.stderr);
@@ -206,14 +208,14 @@ test("creation never touches the source project the preset was packed from", asy
   });
 });
 
-test("a stale preset file fails the reviewed inputs before any mutation", async () => {
+test("a stale recipe file fails the reviewed inputs before any mutation", async () => {
   await withHomeAndWorkspace(async (home, workspace) => {
-    const presetFile = join(home, "presets", "sample.json");
+    const artifactFile = join(home, "recipes", "sample", "artifacts", "tsconfig.json");
     const prepared = await planCreate(home, workspace, "new-app", "sample");
-    assert.ok(prepared.plan && prepared.extension);
-    // Mutating the preset between review and execution must invalidate the plan.
-    await writeFile(presetFile, (await readFile(presetFile, "utf8")).replace("sample", "sample2"));
-    const stale = await execute(prepared.plan, prepared.extension);
+    assert.ok(prepared.plan && prepared.input);
+    // Mutating the recipe between review and execution must invalidate the plan.
+    await writeFile(artifactFile, "{}\n");
+    const stale = await executePlan(prepared.plan);
     assert.equal(stale.status, "failed");
     assert.equal(stale.completed.length, 0);
     assert.ok(stale.errors.join(" ").includes("changed"));
@@ -221,10 +223,10 @@ test("a stale preset file fails the reviewed inputs before any mutation", async 
   });
 });
 
-test("preset name is not required to match the target directory name", async () => {
+test("created package name matches the target, not the packed source", async () => {
   await withHomeAndWorkspace(async (home, workspace) => {
     const created = runCli(
-      ["create", "billing-api", "--preset", "sample", "--cwd", workspace, "--json", "--yes"],
+      ["create", "billing-api", "--recipe", "sample", "--cwd", workspace, "--json", "--yes"],
       home,
     );
     assert.equal(created.code, 0, created.stderr);

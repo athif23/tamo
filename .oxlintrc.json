@@ -56,5 +56,6 @@
       "name": "tamo-effect",
       "specifier": "./.config/oxlint/tamo-effect.ts"
     }
-  ]
+  ],
+  "ignorePatterns": ["test/fixtures/effect-oxlint/**"]
 }

@@ -6,7 +6,7 @@ import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { layer as nodeServices, type NodeServices } from "@effect/platform-node/NodeServices";
 import type { PlatformError } from "effect/PlatformError";
-import type { Extension, Operation, Plan } from "./plan.ts";
+import type { Operation, Plan } from "./plan.ts";
 import { fingerprint } from "./plan.ts";
 
 // All platform work runs on Effect's FileSystem, Path, and ChildProcessSpawner
@@ -37,6 +37,14 @@ export function readBytes(path: string): Promise<Uint8Array | null> {
 const readFileOrNull = (path: string) =>
   Effect.flatMap(FileSystem.FileSystem, (fs) =>
     fs.readFileString(path).pipe(Effect.catchIf(isNotFound, () => Effect.succeed(null))),
+  );
+
+// Raw-byte read for reviewed-input rechecking: snapshots hash raw bytes
+// (see fingerprint), so the recheck must compare raw bytes too — text
+// decoding would alias distinct binaries and break the comparison.
+const readFileBytesOrNull = (path: string) =>
+  Effect.flatMap(FileSystem.FileSystem, (fs) =>
+    fs.readFile(path).pipe(Effect.catchIf(isNotFound, () => Effect.succeed(null))),
   );
 
 // Run pnpm's JS entry directly on Windows; never interpolate project input into a shell.
@@ -122,10 +130,11 @@ export type ApplyResult = {
   errors: string[];
 };
 
-export const executeEffect = (
-  plan: Plan,
-  extension: Extension,
-): Effect.Effect<ApplyResult, never, NodeServices> => {
+// Canonical execution: applies a reviewed Plan's operations sequentially with
+// reviewed-input rechecking and partial-failure reporting. Takes a Plan only —
+// validation/verification is owned by the caller (Core verification for
+// recipes, created-project checks for create), never by the runtime.
+export const executePlanEffect = (plan: Plan): Effect.Effect<ApplyResult, never, NodeServices> => {
   const completed: Operation[] = [];
   const work = Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -140,7 +149,7 @@ export const executeEffect = (
       } satisfies ApplyResult;
 
     for (const input of plan.inputs) {
-      const current = yield* readFileOrNull(input.path);
+      const current = yield* readFileBytesOrNull(input.path);
       if (fingerprint(current) !== input.hash)
         return yield* Effect.fail(new Error(`Input changed; review a new plan: ${input.path}`));
     }
@@ -166,12 +175,11 @@ export const executeEffect = (
       completed.push(operation);
     }
 
-    const errors = yield* Effect.promise(() => extension.validate(plan.cwd));
     return {
-      status: errors.length ? "failed" : "applied",
+      status: "applied",
       completed,
       remaining: [],
-      errors,
+      errors: [],
     } satisfies ApplyResult;
   });
   return Effect.matchCause(work, {
@@ -185,8 +193,8 @@ export const executeEffect = (
   });
 };
 
-export function execute(plan: Plan, extension: Extension): Promise<ApplyResult> {
-  return run(executeEffect(plan, extension));
+export function executePlan(plan: Plan): Promise<ApplyResult> {
+  return run(executePlanEffect(plan));
 }
 
 export function entryType(path: string): Promise<"file" | "directory" | null> {

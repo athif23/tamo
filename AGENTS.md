@@ -24,7 +24,8 @@
 ## Architecture and project ownership
 
 - Keep one package with direct modules. Extract shared code when real reuse or a meaningful interface justifies it; introduce additional packages only for a concrete distribution or ownership need.
-- Extensions inspect, plan, and validate. The runtime applies the reviewed operations sequentially. Planning is read-only, and built-ins use the same extension interface available to users.
+- Custom implementations inspect, plan, and validate; the runtime alone applies reviewed operations sequentially. Planning is read-only.
+- Keep reusable opinions in recipes and native artifacts, semantic knowledge in artifact handlers, and composition/customization mechanics in Core; do not duplicate native config or introduce Core domain taxonomies. See SPEC.md for implemented versus proposed scope. `preset`, `extension`, and `feature` are legacy implementation names for pre-migration code, not target abstractions; new design work uses the recipe/artifact/handler/Core vocabulary.
 - Global developer state (presets, extensions) lives under the Tamo home and must be relocatable through `TAMO_HOME`; tests never touch the real home. Projects carry no Tamo metadata and no project-level manifest may become a requirement.
 - Inspection stays factual ("what is here"). Judgments about what is reusable belong to pack review or the calling agent, and pack never mutates the source project.
 - Ordinary dependencies, reusable files, and official CLI invocations are generic preset primitives; do not add a per-technology extension when a generic primitive suffices.

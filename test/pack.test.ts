@@ -6,12 +6,16 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { tamoHome } from "../src/home.ts";
 import { inspectProject } from "../src/inspect.ts";
-import { buildCandidate, collectIncludedFiles } from "../src/pack.ts";
-import { loadPreset, presetPath, savePreset, validatePreset } from "../src/preset.ts";
+import { checkSeedContents, collectIncludedFiles, packRecipe } from "../src/pack.ts";
+import { loadRecipe, saveRecipe } from "../src/recipes.ts";
 
 const root = resolve(".");
 const manifest = JSON.stringify({
+  name: "source-project",
+  private: true,
+  type: "module",
   packageManager: "pnpm@10.11.0",
+  scripts: { build: "tsc" },
   dependencies: { effect: "4.0.0-rc.112", stripe: "^18.0.0" },
   devDependencies: { oxlint: "1.80.0", vitest: "^3.0.0" },
 });
@@ -91,25 +95,43 @@ test("inspection notes a workspace manifest instead of failing", async () => {
   );
 });
 
-test("the candidate suggests manifest dependencies and captures no files automatically", async () => {
+test("pack captures the manifest as a native artifact minus only the name", async () => {
   await withProject(async (cwd) => {
-    const candidate = buildCandidate(await inspectProject(cwd), []);
-    assert.deepEqual(candidate.conflicts, []);
-    assert.deepEqual(candidate.preset.dependencies, { effect: "4.0.0-rc.112", stripe: "^18.0.0" });
-    assert.deepEqual(candidate.preset.devDependencies, { oxlint: "1.80.0", vitest: "^3.0.0" });
-    assert.deepEqual(candidate.preset.files, []);
+    const packed = await packRecipe(cwd, "web", [], []);
+    assert.deepEqual(packed.conflicts, []);
+    assert.deepEqual(
+      packed.recipe!.artifacts.map((artifact) => artifact.path),
+      ["package.json"],
+    );
+    const captured = JSON.parse(packed.recipe!.artifacts[0]!.contents);
+    assert.equal(captured.name, undefined);
+    // Everything else rides along verbatim: no field allowlist.
+    assert.equal(captured.private, true);
+    assert.equal(captured.type, "module");
+    assert.equal(captured.packageManager, "pnpm@10.11.0");
+    assert.deepEqual(captured.scripts, { build: "tsc" });
+    assert.deepEqual(captured.dependencies, { effect: "4.0.0-rc.112", stripe: "^18.0.0" });
   });
 });
 
-test("excludes drop dependencies and unknown excludes are flagged", async () => {
+test("excludes omit through the shared machinery and unknown excludes are flagged", async () => {
   await withProject(async (cwd) => {
-    const candidate = buildCandidate(await inspectProject(cwd), ["stripe", "nope"]);
-    assert.deepEqual(candidate.preset.dependencies, { effect: "4.0.0-rc.112" });
-    assert.ok(candidate.conflicts.some((conflict) => conflict.includes("nope")));
+    const packed = await packRecipe(cwd, "web", [], ["stripe", "vitest", "nope"]);
+    assert.ok(packed.conflicts.some((conflict) => conflict.includes("nope")));
+    assert.equal(packed.recipe, undefined);
+  });
+  await withProject(async (cwd) => {
+    const packed = await packRecipe(cwd, "web", [], ["stripe", "vitest"]);
+    assert.deepEqual(packed.conflicts, []);
+    const captured = JSON.parse(packed.recipe!.artifacts[0]!.contents);
+    assert.deepEqual(captured.dependencies, { effect: "4.0.0-rc.112" });
+    assert.deepEqual(captured.devDependencies, { oxlint: "1.80.0" });
+    // Selection edits never touch the source project.
+    assert.ok(JSON.parse(await readFile(join(cwd, "package.json"), "utf8")).dependencies.stripe);
   });
 });
 
-test("explicitly included files enter the candidate with their contents", async () => {
+test("explicitly included files enter the recipe with their contents", async () => {
   await withProject(
     async (cwd) => {
       const included = await collectIncludedFiles(cwd, ["tsconfig.json", "src/lib/result.ts"]);
@@ -123,7 +145,7 @@ test("explicitly included files enter the candidate with their contents", async 
   );
 });
 
-test(".env.example is capturable reusable seed content while .env stays denied", async () => {
+test(".env.example is capturable reusable content while .env stays denied", async () => {
   await withProject(
     async (cwd) => {
       const included = await collectIncludedFiles(cwd, [".env.example", ".env"]);
@@ -167,31 +189,35 @@ test("secrets, generated state, and boundary escapes are never captured", async 
   );
 });
 
-test("preset validation rejects unknown keys, bad names, and escaping paths", () => {
-  const base = { name: "web", packageManager: "pnpm@10" };
-  assert.throws(() => validatePreset({ ...base, surprise: 1 }, "test"), /Unknown preset key/);
-  assert.throws(() => validatePreset({ ...base, name: "../web" }, "test"), /name must match/);
-  assert.throws(
-    () => validatePreset({ ...base, files: [{ path: "../escape.txt", contents: "" }] }, "test"),
-    /stay inside the project/,
-  );
-  assert.throws(
-    () => validatePreset({ ...base, dependencies: { effect: 4 } }, "test"),
-    /version strings/,
+test("stored recipe paths get the same policy without filesystem access", () => {
+  assert.deepEqual(checkSeedContents([{ path: "tsconfig.json", contents: "{}" }]), []);
+  assert.ok(
+    checkSeedContents([{ path: ".env", contents: "x" }])
+      .join("\n")
+      .includes(".env is never captured"),
   );
 });
 
-test("presets round-trip through an isolated home", async () => {
+test("recipes round-trip through an isolated home byte-for-byte", async () => {
   const home = await mkdtemp(join(tmpdir(), "tamo-home-"));
   try {
-    const preset = validatePreset(
-      { ...JSON.parse(manifest), name: "web", files: [{ path: "tsconfig.json", contents: "{}" }] },
-      "test",
+    const artifacts = [
+      { path: "package.json", contents: '{"private":true}\n' },
+      { path: "tsconfig.json", contents: "{}" },
+    ];
+    const path = await saveRecipe(home, "web", artifacts);
+    assert.equal(path, join(home, "recipes", "web"));
+    const loaded = await loadRecipe(home, "web");
+    assert.deepEqual(loaded.conflicts, []);
+    assert.equal(loaded.recipe!.name, "web");
+    assert.deepEqual(loaded.recipe!.artifacts, artifacts);
+    assert.equal(loaded.snapshots.length, 3);
+    assert.equal((await loadRecipe(home, "other")).recipe, undefined);
+    assert.ok(
+      (await loadRecipe(home, "other")).conflicts.some((conflict: string) =>
+        conflict.includes("Unknown recipe: other"),
+      ),
     );
-    const path = await savePreset(home, preset);
-    assert.equal(path, presetPath(home, "web"));
-    assert.deepEqual(await loadPreset(home, "web"), preset);
-    assert.equal(await loadPreset(home, "other"), null);
   } finally {
     await rm(home, { recursive: true, force: true });
   }
@@ -211,9 +237,12 @@ test("the pack slice: dry-run saves nothing, noninteractive needs --yes, repack 
         assert.equal(dry.code, 0, dry.stderr);
         const dryRun = JSON.parse(dry.stdout);
         assert.equal(dryRun.status, "dry-run");
-        assert.deepEqual(dryRun.preset.dependencies, { effect: "4.0.0-rc.112", stripe: "^18.0.0" });
-        assert.deepEqual(dryRun.preset.files, []);
-        assert.equal(await readdir(join(home, "presets")).catch(() => null), null);
+        assert.equal(dryRun.recipe.name, "web");
+        assert.deepEqual(
+          dryRun.recipe.artifacts.map((artifact: { path: string }) => artifact.path),
+          ["package.json"],
+        );
+        assert.equal(await readdir(join(home, "recipes")).catch(() => null), null);
 
         const unconfirmed = runCli(["pack", "web", "--cwd", cwd, "--json"], home);
         assert.equal(unconfirmed.code, 2);
@@ -226,8 +255,17 @@ test("the pack slice: dry-run saves nothing, noninteractive needs --yes, repack 
         assert.equal(saved.code, 0, saved.stderr);
         const savedResult = JSON.parse(saved.stdout);
         assert.equal(savedResult.status, "saved");
-        assert.deepEqual(savedResult.preset.files, [{ path: "tsconfig.json", contents: "{}" }]);
-        assert.deepEqual(JSON.parse(await readFile(savedResult.path, "utf8")), savedResult.preset);
+        assert.deepEqual(
+          savedResult.recipe.artifacts.map((artifact: { path: string }) => artifact.path),
+          ["package.json", "tsconfig.json"],
+        );
+        assert.equal(await readFile(join(home, "recipes", "web", "recipe.json"), "utf8"), "{}\n");
+        assert.deepEqual(
+          JSON.parse(
+            await readFile(join(home, "recipes", "web", "artifacts", "package.json"), "utf8"),
+          ).dependencies,
+          { effect: "4.0.0-rc.112", stripe: "^18.0.0" },
+        );
 
         const repack = runCli(["pack", "web", "--cwd", cwd, "--json", "--yes"], home);
         assert.equal(repack.code, 1);
@@ -240,10 +278,18 @@ test("the pack slice: dry-run saves nothing, noninteractive needs --yes, repack 
         );
         assert.equal(forced.code, 0, forced.stderr);
         const forcedResult = JSON.parse(forced.stdout);
-        assert.deepEqual(forcedResult.preset.dependencies, { effect: "4.0.0-rc.112" });
-        // Repack rebuilds from the current project, so previously included files
-        // are not silently merged in; they must be selected again.
-        assert.deepEqual(forcedResult.preset.files, []);
+        assert.deepEqual(JSON.parse(forcedResult.recipe.artifacts[0].contents).dependencies, {
+          effect: "4.0.0-rc.112",
+        });
+        // Repack rebuilds from the current project: previously included files
+        // are not silently merged in, and deselected artifacts do not linger.
+        assert.deepEqual(
+          forcedResult.recipe.artifacts.map((artifact: { path: string }) => artifact.path),
+          ["package.json"],
+        );
+        assert.deepEqual(await readdir(join(home, "recipes", "web", "artifacts")), [
+          "package.json",
+        ]);
 
         assert.equal(await readFile(join(cwd, "package.json"), "utf8"), snapshot);
         assert.deepEqual(await readdir(cwd), listing);
@@ -274,36 +320,4 @@ test("an unsupported project reports blocked conflicts, not a candidate failure"
       await rm(home, { recursive: true, force: true });
     }
   }, {});
-});
-
-test("a reviewed agent candidate saves through --from", async () => {
-  await withProject(
-    async (cwd) => {
-      const home = await mkdtemp(join(tmpdir(), "tamo-home-"));
-      try {
-        const candidate = join(home, "candidate.json");
-        await writeFile(
-          candidate,
-          JSON.stringify({
-            name: "web",
-            packageManager: "pnpm@10.11.0",
-            dependencies: { effect: "4.0.0-rc.112" },
-            devDependencies: {},
-            files: [{ path: "tsconfig.json", contents: "{}" }],
-          }),
-        );
-        const saved = runCli(
-          ["pack", "web", "--cwd", cwd, "--json", "--yes", "--from", candidate],
-          home,
-        );
-        assert.equal(saved.code, 0, saved.stderr);
-        const savedResult = JSON.parse(saved.stdout);
-        assert.equal(savedResult.status, "saved");
-        assert.deepEqual(savedResult.preset.dependencies, { effect: "4.0.0-rc.112" });
-      } finally {
-        await rm(home, { recursive: true, force: true });
-      }
-    },
-    { "package.json": manifest, "tsconfig.json": "{}" },
-  );
 });
