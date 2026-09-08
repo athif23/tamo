@@ -9,6 +9,17 @@ Implemented so far:
 - `tamo create <dir> --recipe <name>` — replay a saved recipe into a new, ordinary project: native artifacts at their original paths (the package name follows the new target) and a planned `pnpm install`.
 - `tamo add effect-oxlint` — add the preferred Effect lint setup to an existing pnpm project while preserving its Oxlint configuration.
 
+## Agent skill
+
+The canonical coding-agent skill lives at `skills/tamo/SKILL.md`. It teaches compatible coding agents how to operate the globally installed `tamo` CLI. The skill is instructions only — installing it does not install the Tamo executable itself.
+
+Install it with the [`skills`](https://skills.sh/) CLI (flag syntax verified with `skills@1.5.24`; substitute this repository's actual GitHub path — it has no public remote yet):
+
+```sh
+npx skills add <owner>/<repo> --skill tamo      # project-level
+npx skills add <owner>/<repo> --skill tamo -g   # global
+```
+
 ## Tamo home
 
 All developer-owned state lives under the Tamo home (default `~/.tamo`, relocated by `TAMO_HOME`):
