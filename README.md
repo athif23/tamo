@@ -41,11 +41,11 @@ npm installation instructions will be added here once the package is published.
 
 The canonical coding-agent skill lives at `skills/tamo/SKILL.md`. It teaches compatible coding agents how to operate the `tamo` CLI. Installing the skill does not install Tamo itself.
 
-Install it with the [`skills`](https://skills.sh/) CLI (substitute this repository's actual GitHub path once it has a public remote):
+Install it with the [`skills`](https://skills.sh/) CLI:
 
 ```sh
-npx skills add <owner>/<repo> --skill tamo      # project-level
-npx skills add <owner>/<repo> --skill tamo -g   # global
+npx skills add athif23/tamo --skill tamo      # project-level
+npx skills add athif23/tamo --skill tamo -g   # global
 ```
 
 ## Quick start
