@@ -10,7 +10,13 @@ import { tamoHome } from "./home.ts";
 import { planCreate, verifyCreate } from "./create.ts";
 import { inspectProject, type Inspection } from "./inspect.ts";
 import { packRecipe, type PackedRecipe } from "./pack.ts";
-import { loadAllRecipes, recipeDir, saveRecipe } from "./recipes.ts";
+import {
+  listRecipeNames,
+  loadRecipeTree,
+  mergeSnapshots,
+  recipeDir,
+  saveRecipe,
+} from "./recipes.ts";
 import { entryType, executePlan, read, type ApplyResult } from "./runtime.ts";
 import type { Operation, Plan } from "./plan.ts";
 import {
@@ -125,25 +131,28 @@ function reportResult(values: { json?: boolean }, plan: Plan, result: ApplyResul
     );
 }
 
-// Recipe lookup for `tamo add`: durable home recipes resolved through the
-// one Core path. Every name — including effect-oxlint — is an ordinary
-// durable recipe; there is no privileged built-in.
+// Recipe lookup for `tamo add`: the selected tree loads demand-first —
+// only the entry plus its transitive includes are parsed. Unrelated home
+// recipes never participate. Every name — including effect-oxlint — is an
+// ordinary durable recipe; there is no privileged built-in.
 async function planRecipe(
   home: string,
   name: string,
   cwd: string,
 ): Promise<{ input?: CompositionInput; plan?: Plan; conflicts: string[] }> {
-  const loaded = await loadAllRecipes(home);
+  // Unknown top-level names stay a normal not-found error (not a blocked
+  // plan), with an Available list built from directory names only.
+  if ((await entryType(recipeDir(home, name))) !== "directory") {
+    const available = await listRecipeNames(home);
+    throw new Error(`Unknown recipe: ${name}. Available: ${available.join(", ")}`);
+  }
+  const loaded = await loadRecipeTree(home, name);
   if (loaded.conflicts.length) return { conflicts: loaded.conflicts };
   const recipes = loaded.recipes;
-  if (!recipes[name])
-    throw new Error(
-      `Unknown recipe: ${name}. Available: ${Object.keys(recipes).sort().join(", ")}`,
-    );
   const input = recipeInput(cwd, recipes, name);
   const prepared = await planComposition(input);
   if (!prepared.plan) return { input, conflicts: prepared.conflicts };
-  prepared.plan.inputs = [...prepared.plan.inputs, ...loaded.snapshots];
+  prepared.plan.inputs = mergeSnapshots(prepared.plan.inputs, loaded.snapshots);
   return { input, plan: prepared.plan, conflicts: [] };
 }
 
@@ -238,7 +247,7 @@ Tamo home: the manifest as a native artifact (minus the source project's
 name and version, which are project identity, not reusable setup) plus
 explicitly included files. Secrets, generated output, dependency
 directories, caches, and lockfiles are never captured. The source project
-is never modified.
+is never modified. Currently supports pnpm projects only.
 
 Flags:
   --cwd <path>        Pack the project at <path> (default: current directory).

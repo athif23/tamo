@@ -38,7 +38,8 @@ tamo pack <recipe-name> [--cwd <path>] [--include <path>]... [--exclude <pkg>]..
 - `create` applies a Recipe to a new project. The package name follows
   the target directory. Non-empty targets are blocked, never overwritten.
 - `add` applies a Recipe to the existing project at `--cwd` (default `.`).
-- `pack` captures the current project as a Recipe. The manifest is always
+- `pack` captures the current project as a Recipe. Currently supports
+  pnpm projects only. The manifest is always
   captured (minus the source project's `name` and `version`, which are
   project identity rather than reusable setup); other files only via
   `--include` (a file or a directory, which expands); dependencies can be

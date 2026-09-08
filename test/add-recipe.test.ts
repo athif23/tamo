@@ -152,7 +152,7 @@ test("production code carries no Extension or feature-registry remnants", async 
   const cli = await readFile(join(root, "src/cli.ts"), "utf8");
   assert.ok(!cli.includes("effectOxlintRecipe"), "no built-in recipe injection remains");
   assert.ok(!cli.includes("shadows the built-in"), "no reserved-name shadowing remains");
-  assert.ok(cli.includes("loadAllRecipes"), "add must resolve durable home recipes");
+  assert.ok(cli.includes("loadRecipeTree"), "add must resolve durable home recipes");
   assert.ok(cli.includes("executePlan"), "apply must go through executePlan");
   assert.ok(cli.includes("verifyComposition"), "validation must go through Core verification");
 });

@@ -231,6 +231,54 @@ export async function loadAllRecipes(home: string): Promise<{
   return { recipes, snapshots, conflicts: [] };
 }
 
+// Listing recipe directory names for diagnostics is always safe: it never
+// parses recipe.json. Planning uses it only to render Available lists.
+export async function listRecipeNames(home: string): Promise<string[]> {
+  return ((await listDirectory(join(home, "recipes"))) ?? []).sort();
+}
+
+// Demand-first tree loading for selected-Recipe planning: load and
+// validate only the entry plus its transitive includes. Unrelated recipe
+// directories are never parsed — listing their names for diagnostics is
+// fine, reading their recipe.json is not. Each reachable recipe loads at
+// most once via the visited set, so include cycles terminate here and the
+// existing Core resolver still reports cycle semantics. A missing reachable
+// recipe surfaces loadRecipe's unknown-recipe conflict; unreachable breakage
+// never participates.
+export async function loadRecipeTree(
+  home: string,
+  entry: string,
+): Promise<{ recipes: Record<string, Recipe>; snapshots: Snapshot[]; conflicts: string[] }> {
+  const recipes: Record<string, Recipe> = {};
+  const snapshots: Snapshot[] = [];
+  const visited = new Set<string>();
+  const queue = [entry];
+  while (queue.length > 0) {
+    const name = queue.pop()!;
+    if (visited.has(name)) continue;
+    visited.add(name);
+    const loaded = await loadRecipe(home, name);
+    if (loaded.conflicts.length) return { recipes: {}, snapshots: [], conflicts: loaded.conflicts };
+    // SAFETY: loadRecipe returns a recipe unless its conflicts are nonempty.
+    recipes[name] = loaded.recipe!;
+    snapshots.push(...loaded.snapshots);
+    for (const include of loaded.recipe!.includes ?? [])
+      if (!visited.has(include.recipe)) queue.push(include.recipe);
+  }
+  return { recipes, snapshots, conflicts: [] };
+}
+
+// Merge reviewed-input lists without path duplicates: the first snapshot
+// for a path wins. Recipe files already observed through Core's tracked
+// behavior binding keep their tracked hash; target reads keep theirs.
+export function mergeSnapshots(...lists: Snapshot[][]): Snapshot[] {
+  const merged = new Map<string, Snapshot>();
+  for (const list of lists)
+    for (const snapshot of list)
+      if (!merged.has(snapshot.path)) merged.set(snapshot.path, snapshot);
+  return [...merged.values()];
+}
+
 // Detect the recipe-local behavior module without importing it: import
 // stays demand-first inside Core planning. The fixed filename keeps stored
 // data out of module resolution; symlinks are rejected so the import can

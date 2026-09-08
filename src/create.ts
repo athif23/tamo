@@ -5,7 +5,7 @@ import { packageManifestHandler } from "./handlers/package-manifest.ts";
 import { oxlintConfigHandler } from "./handlers/oxlint-config.ts";
 import { edit } from "./jsonc.ts";
 import { checkSeedContents } from "./pack.ts";
-import { loadAllRecipes } from "./recipes.ts";
+import { listRecipeNames, loadRecipeTree, mergeSnapshots } from "./recipes.ts";
 import { entryType, listDirectory, read } from "./runtime.ts";
 import type { Plan } from "./plan.ts";
 
@@ -175,11 +175,11 @@ export async function planCreate(
   options?: { allowPopulatedTarget?: boolean },
 ): Promise<CreatePreparation> {
   const target = resolve(cwd, targetArgument);
-  const loaded = await loadAllRecipes(home);
+  const loaded = await loadRecipeTree(home, recipeName);
   if (loaded.conflicts.length) return { target, conflicts: loaded.conflicts };
   const entry = loaded.recipes[recipeName];
   if (!entry) {
-    const available = Object.keys(loaded.recipes);
+    const available = await listRecipeNames(home);
     return {
       target,
       conflicts: [
@@ -212,10 +212,11 @@ export async function planCreate(
   const prepared = await planComposition(input);
   if (!prepared.plan) return { target, conflicts: prepared.conflicts };
   const plan = prepared.plan;
-  // Reviewed inputs must cover the loaded recipe files too, so a recipe
-  // edited between review and execution fails the recheck. This holds for
+  // Reviewed inputs cover the loaded tree files too, so a recipe edited
+  // between review and execution fails the recheck. The tree loader already
+  // scoped snapshots to the selected tree. This holds for
   // preparation plans as well: behavior.mjs stays a reviewed input.
-  plan.inputs = [...plan.inputs, ...loaded.snapshots];
+  plan.inputs = mergeSnapshots(plan.inputs, loaded.snapshots);
   // A preparation plan carries only its initializer commands: no name
   // stamping (no writes exist) and no install step. Both belong to the
   // fresh final plan after the replan checkpoint.

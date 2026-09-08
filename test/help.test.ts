@@ -59,3 +59,12 @@ test("each command documents its own usage and flags", () => {
   assert.ok(!help("add", "--help").includes("--include"));
   assert.ok(!help("inspect", "--help").includes("--recipe"));
 });
+
+test("pack help states the pnpm-only limitation", () => {
+  const output = help("pack", "--help");
+  assert.ok(output.includes("pnpm"), "pack help must mention pnpm");
+  assert.ok(
+    output.includes("Currently supports pnpm projects only"),
+    "pack help must state the pnpm-only limitation",
+  );
+});
