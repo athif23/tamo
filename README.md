@@ -21,21 +21,10 @@ Tamo lets those preferences live as reusable Recipes. Define a setup once, then 
 
 ## Installation
 
-The npm package has not been published yet, so there is currently no npm install path. The supported way to run Tamo today is from source:
-
 ```sh
-pnpm install
-node src/cli.ts --help
-```
-
-To use the `tamo` executable name used throughout this README, link the package while developing:
-
-```sh
-pnpm link --global
+npm install -g tamo
 tamo --help
 ```
-
-npm installation instructions will be added here once the package is published.
 
 ### Agent skill
 
@@ -140,6 +129,13 @@ pnpm install          # install dependencies
 pnpm check            # typecheck, lint, format check, unit tests
 pnpm format           # format TypeScript sources
 pnpm test:integration # end-to-end CLI run against a temp project (may need registry access)
+```
+
+To run the CLI from source without installing the npm package:
+
+```sh
+pnpm install
+node src/cli.ts --help
 ```
 
 See [SPEC.md](SPEC.md) for the contract and [PARKING_LOT.md](PARKING_LOT.md) for deferred work.
