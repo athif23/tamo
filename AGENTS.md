@@ -32,6 +32,13 @@
 - Native project files remain authoritative. Preserve unrelated configuration, comments, and scripts; report conflicting required settings before mutation. Recheck reviewed inputs before execution and report partial application accurately.
 - Keep plans and results independent of CLI presentation, with JSON output usable by agents.
 
+## Commit messages
+
+- Format every commit message as `<type>: <subject>` on a single line.
+- Use only these types: `feat`, `fix`, `docs`, `build`, `chore`.
+- Write `<subject>` in lower-case imperative, short and specific, with no trailing period.
+- Examples: `docs: add distributable Tamo agent skill`, `fix: scope recipe loading to selected trees`.
+
 ## Verification and communication
 
 - Test the changed behavior, including preservation, conflicts, and repeat application when relevant. For code changes, run `pnpm check`; for changes to planning, installation, patching, or validation, also run `pnpm test:integration`.
