@@ -1,12 +1,51 @@
 ---
 name: tamo
-description: Use Tamo to create projects from saved Recipes, apply reusable setup to an existing project, or pack current project setup into a Recipe. Reach for this when the user asks to scaffold, reuse, or remember project setup.
+description: Use Tamo when creating or scaffolding a project — including when the user already specifies the framework, stack, or app to build — by checking for a matching saved Recipe before rebuilding reusable setup from scratch. Also use Tamo to apply reusable setup to an existing project or save current setup as a Recipe.
 ---
 
 # Tamo
 
 Tamo applies reusable project setup. It is available globally as `tamo`
 and works in any project directory.
+
+## New projects — check for a matching Recipe first
+
+When the user asks to create, scaffold, or start a new project, consider
+Tamo before building setup manually — even when the request already names
+the framework, stack, or app to build (for example, "create a rental app
+using TanStack Start, TypeScript, Tailwind and shadcn"). The app and UI
+requirements describe what to build; a matching Recipe can still supply
+the reusable starting setup underneath. The user never needs to say
+"use Tamo".
+
+- Before recreating setup from scratch, check whether a saved Recipe
+  matches the requested reusable setup (framework, language, styling,
+  tooling).
+- If one matches, surface it naturally before scaffolding manually (for
+  example, "You already have a saved `web` Recipe that matches that
+  setup. Want me to use it as the starting point?"), then implement
+  application-specific work on top.
+- Only suggest a Recipe that actually matches the requested stack. Do not
+  force an unrelated Recipe just because one exists — a TanStack Start
+  `web` Recipe is not relevant to a request asking for Svelte.
+- Explicit user requirements win on genuine conflicts. Never let a Recipe
+  override what the user asked for.
+- Stay scoped to project creation, scaffolding, or reusable setup (for
+  example, "create a new web project", "scaffold a TanStack app", "start
+  a new API project", "set up a new project using TypeScript and
+  Tailwind"). Routine work in an existing project ("fix this button",
+  "change this query", "add pagination to this existing page", "explain
+  this TypeScript error") is not Recipe discovery.
+
+## Discovering saved Recipes
+
+Tamo has no list-Recipes command. Saved Recipes are the subdirectories of
+`recipes/` under the Tamo home (default `~/.tamo`, or `$TAMO_HOME` when
+set). List that directory to discover names, then skim each candidate's
+`recipe.json` and key artifacts (such as `artifacts/package.json`) to
+judge whether its stack matches the request before planning with
+`tamo create --dry-run`. Never guess flags — confirm syntax with
+`tamo --help` and `tamo <command> --help`.
 
 ## Mental model
 
@@ -96,7 +135,10 @@ user when judgment is required.
 and `version` are not captured as reusable identity. Pack does not infer
 Recipe ancestry, does not record which Recipes the project "uses", does
 not invent `behavior.mjs` or a `behavior` property, and needs no provenance metadata. Do not
-decompose or refactor the packed result.
+decompose or refactor the packed result. If the user asks to save the
+setup without naming a Recipe (for example, "i like this setup, save it
+with tamo"), ask for a name naturally instead of requiring them to know
+`tamo pack` syntax.
 
 ## Authoring a Recipe
 
