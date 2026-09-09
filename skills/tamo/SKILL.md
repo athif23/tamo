@@ -20,14 +20,35 @@ the reusable starting setup underneath. The user never needs to say
 
 - Before recreating setup from scratch, check whether a saved Recipe
   matches the requested reusable setup (framework, language, styling,
-  tooling).
-- If one matches, surface it naturally before scaffolding manually (for
-  example, "You already have a saved `web` Recipe that matches that
-  setup. Want me to use it as the starting point?"), then implement
-  application-specific work on top.
-- Only suggest a Recipe that actually matches the requested stack. Do not
-  force an unrelated Recipe just because one exists — a TanStack Start
-  `web` Recipe is not relevant to a request asking for Svelte.
+  tooling). Judge by actual Recipe contents — `artifacts/package.json`,
+  framework config, `components.json`, relevant native config — not by
+  name alone. A Recipe named `web` does not automatically match every web
+  project. Don't require exhaustive inspection when the distinction is
+  already obvious.
+- If the user explicitly names a Recipe ("use `web-test`", "use my web
+  Recipe"), honor that directly when valid. Don't ask them to choose
+  again.
+- If exactly one Recipe clearly matches, use it naturally as the starting
+  point and mention it, then implement application-specific work on top.
+  No needless confirmation round trip.
+- If several Recipes plausibly match, don't pick arbitrarily. Briefly list
+  the matches and ask which to use (for example, "I found two saved Tamo
+  Recipes that match this setup: `web`, `web-test` — which one should I
+  use?"). Include a short distinction only when plainly visible from the
+  contents; never invent differences or dump artifact inventories. Ask even
+  when the matches currently look identical or equivalent — distinct saved
+  Recipes are distinct user choices (saved separately, and they may evolve
+  independently), so never collapse them into one implicit pick. You may
+  note the equivalence briefly ("They currently appear to contain the same
+  setup. Which one should I use?") but still surface both and ask. If all
+  but one conflict with explicit user requirements, that one is the clear
+  match — use it without asking.
+- If nothing matches, proceed without forcing Tamo setup reuse. Only
+  suggest a Recipe that actually matches the requested stack — a TanStack
+  Start `web` Recipe is not relevant to a request asking for Svelte.
+- Never choose between Recipes by name, discovery or directory order,
+  whichever was inspected first, recency, perceived redundancy, or
+  arbitrary preference.
 - Explicit user requirements win on genuine conflicts. Never let a Recipe
   override what the user asked for.
 - Stay scoped to project creation, scaffolding, or reusable setup (for
@@ -129,13 +150,61 @@ silently overwrite files, edit the target just to force the command
 through, or touch Tamo source. Report the conflicting intent/state to the
 user when judgment is required.
 
+## Saving setup — curate a reusable Recipe
+
+When the user asks to save, remember, or reuse the current setup (for
+example, "i like this setup, save it with tamo"), capture reusable setup
+and conventions — not a copy of the application. This judgment belongs to
+you as the agent; `pack` itself does not generalize. Inspect the project
+semantically before deciding what belongs in the Recipe.
+
+- Preserve setup, conventions, and reusable scaffolding: dependency setup,
+  framework and language config, styling and theme setup, lint/format/test
+  config, reusable utilities, router and bootstrap files, genuinely
+  reusable primitives and components, and the minimal structure a future
+  project needs to start correctly. Judge by role, not by a fixed file
+  list.
+- Normally exclude application content: mock or business data,
+  product-specific widgets, branding, project-specific assets, pages,
+  features, navigation, and anything else that only makes sense for this
+  application. Judge by meaning, not filenames — `src/data/mock.ts` is a
+  hint, never a rule. Generated files, build output, caches, and lockfiles
+  stay excluded as pack already enforces.
+- For mixed files (stylesheets, index routes, root layouts, app shells):
+  keep the reusable portion in the Recipe copy and omit the app-specific
+  portion. You may edit or author the Recipe copy directly — for example,
+  keep the Tailwind import and theme variables from `styles.css` while
+  dropping dashboard-only styling.
+- When removing app content would leave the Recipe broken or confusing,
+  add a small generic starter artifact in the Recipe instead (for example,
+  a minimal valid index route demonstrating the expected structure). Keep
+  it valid, small, easy to replace, and free of fake business content —
+  minimal but instructive, neither an empty skeleton nor the old app.
+- Use `tamo pack` for the reusable baseline, then curate the saved Recipe
+  copy directly within the documented layout (`recipe.json` stays
+  composition metadata only; reusable files live under `artifacts/**`).
+  Never guess flags.
+- Never modify the source project to make saving easier; it stays as the
+  user built it. If the Recipe needs a generic file the source lacks,
+  create it in the Recipe itself.
+- Don't over-generalize: keep real reusable primitives, router bootstrap,
+  theme variables, and utilities. Aim for reusable, understandable,
+  working setup — not the smallest possible Recipe.
+- After saving a meaningful project-creation Recipe, validate it with a
+  temporary `tamo create <temporary-project> --recipe <name>`, run the
+  lightweight checks the plan suggests (install, typecheck/build, starter
+  route exists, no app-specific leak), then delete the temporary project.
+  Skip this for trivial Recipes.
+
 ## Pack rules
 
-`pack` captures reusable native state as it exists. Source package `name`
+`pack` captures reusable native state as it exists. It is a deterministic
+capture primitive and performs no semantic generalization. Source package `name`
 and `version` are not captured as reusable identity. Pack does not infer
 Recipe ancestry, does not record which Recipes the project "uses", does
 not invent `behavior.mjs` or a `behavior` property, and needs no provenance metadata. Do not
-decompose or refactor the packed result. If the user asks to save the
+restructure the source project to suit packing; curate the saved Recipe
+copy afterward instead (see previous section). If the user asks to save the
 setup without naming a Recipe (for example, "i like this setup, save it
 with tamo"), ask for a name naturally instead of requiring them to know
 `tamo pack` syntax.
