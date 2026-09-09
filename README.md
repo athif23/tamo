@@ -1,25 +1,12 @@
-# Tamo
+# tamo
 
-Tamo remembers reusable project setup so developers and coding agents do not have to repeatedly reconstruct the same setup decisions.
+`tamo` remembers reusable project setup so you do not have to rebuild or re-explain the same setup every time.
 
-Tamo helps you set things up, but never takes ownership away from you. It creates ordinary projects, not Tamo projects: native files stay authoritative, and nothing in the result depends on Tamo. Tamo works on its own as a CLI; coding agents can use it as deterministic tooling.
+It helps set up ordinary projects without taking ownership of them. Native project files stay authoritative, and the project does not depend on `tamo` afterward.
 
-## The problem
+## Install
 
-Every new project starts with the same repeated setup: package manager choices, TypeScript config, lint rules, Effect conventions, Tailwind/shadcn setup, test tooling, directory layout. Developers either redo it by hand or re-describe it to a coding agent from scratch each time.
-
-Tamo lets those preferences live as reusable Recipes. Define a setup once, then apply it to new or existing projects instead of re-describing it.
-
-## Key properties
-
-- Native project files remain authoritative. Tamo reads and writes the files your tools already understand.
-- Projects contain no Tamo metadata. Deleting Tamo changes nothing about them.
-- Existing, unrelated project state is preserved when setup is applied.
-- Compatible Recipe contributions combine; incompatible intent blocks instead of silently picking a winner.
-- Every mutating command supports `--dry-run`, so plans can be reviewed before anything changes.
-- Tamo can be used directly from the terminal or driven by a coding agent.
-
-## Installation
+### CLI
 
 ```sh
 npm install -g @atindo23/tamo
@@ -28,117 +15,314 @@ tamo --help
 
 ### Agent skill
 
-The canonical coding-agent skill lives at `skills/tamo/SKILL.md`. It teaches compatible coding agents how to operate the `tamo` CLI. Installing the skill does not install Tamo itself.
-
-Install it with the [`skills`](https://skills.sh/) CLI:
+The coding-agent skill teaches compatible agents how to discover, save, and reuse Recipes with `tamo`.
 
 ```sh
 npx skills add athif23/tamo --skill tamo      # project-level
 npx skills add athif23/tamo --skill tamo -g   # global
 ```
 
+Installing the skill does not install the CLI itself.
+
 ## Quick start
 
-Four commands cover the main workflow. Run `tamo <command> --help` for exact flags.
+### Create from a Recipe
 
 ```sh
-# Report what setup a project currently has. Read-only.
-tamo inspect --cwd ./my-project
-
-# Capture reusable setup from the current project as a Recipe.
-# Review first with --dry-run, then apply with --yes.
-tamo pack web --cwd ./my-project \
-  --include tsconfig.json \
-  --include .oxlintrc.json \
-  --dry-run
-
-# Create a new ordinary project from a saved Recipe.
-tamo create new-app --recipe web --dry-run
-
-# Apply a Recipe to an existing project.
-tamo add lint --cwd ./existing-app --dry-run
+tamo create my-app --recipe web --dry-run
 ```
 
-`--dry-run` plans without changing anything. Without `--yes`, interactive runs ask for confirmation and noninteractive runs exit 2 with `confirmation-required`. Blocked plans and failures exit 1.
+Review the plan, then apply it:
+
+```sh
+tamo create my-app --recipe web --yes
+```
+
+### Save reusable setup
+
+```sh
+tamo pack web --cwd ./my-project \
+  --include tsconfig.json \
+  --include src/styles.css \
+  --dry-run
+```
+
+Then save it:
+
+```sh
+tamo pack web --cwd ./my-project \
+  --include tsconfig.json \
+  --include src/styles.css \
+  --yes
+```
+
+### Add setup to an existing project
+
+```sh
+tamo add lint --cwd ./my-project --dry-run
+```
+
+### Inspect a project
+
+```sh
+tamo inspect --cwd ./my-project
+```
+
+Every mutating command supports `--dry-run`, so you can review what `tamo` plans to do before anything changes.
+
+### With an agent
+
+Once the skill is installed, you can describe what you want without naming a Recipe first:
+
+> create a web app using TanStack Start, TypeScript, Tailwind, and shadcn
+
+The agent can discover matching saved Recipes before rebuilding the same setup.
+
+When you want to keep a setup for later:
+
+> i like this setup, save it with tamo
+
+The agent can curate the reusable parts into a Recipe while leaving the source project untouched.
+
+## Why tamo
+
+Project setup is repetitive. The same framework choices, TypeScript settings, lint rules, UI setup, test tooling, and directory conventions often get rebuilt or re-explained from project to project.
+
+`tamo` lets those decisions live as reusable Recipes.
+
+The key idea is:
+
+> Reusable setup without tool ownership.
+
+A Recipe can be used to create a new project or reconciled into an existing one. The result stays an ordinary project with ordinary native files.
+
+### Templates
+
+Templates and starter repos are useful when you want to copy a known starting point.
+
+```text
+template
+  ↓ copy / render
+new project
+```
+
+A Recipe is different. It represents reusable setup that can be planned against the project that already exists.
+
+```text
+Recipe
+  ↓ plan + reconcile
+new or existing project
+```
+
+Recipes can also compose. Where `tamo` understands the artifact type, compatible contributions combine and incompatible intent blocks instead of silently picking a winner.
+
+A template is still the simpler choice when a fixed copied starting point is exactly what you want.
+
+### Projen
+
+Projen-style generators keep a generator definition as the source of truth and generate project files from it.
+
+```text
+generator definition
+        ↓
+generated project files
+```
+
+`tamo` deliberately keeps the native project files as the source of truth.
+
+```text
+native project files
+        ↕
+   reusable Recipe
+        ↓
+native project files
+```
+
+`tamo` applies setup when asked, then gets out of the way. It does not continuously own or regenerate the project afterward.
+
+Use a generator when you want centralized ownership of project configuration. Use `tamo` when you want reusable setup without handing ownership of the project to the setup tool.
+
+Coding agents are one useful way to drive `tamo`, but they are not required. The CLI works on its own.
 
 ## Recipes
 
-A Recipe is reusable setup: ordinary native project files plus a small amount of composition metadata. Recipes live under the Tamo home (default `~/.tamo`, relocatable via `TAMO_HOME`):
+A Recipe is reusable setup expressed through ordinary native project files plus a small amount of composition metadata.
+
+Recipes live under the `tamo` home directory, which defaults to `~/.tamo` and can be changed with `TAMO_HOME`.
 
 ```text
 ~/.tamo/
   recipes/
     web/
       recipe.json
-      behavior.mjs       # optional
+      behavior.mjs        # optional default behavior entrypoint
       artifacts/
         package.json
         tsconfig.json
         ...
 ```
 
-- **artifacts** are ordinary native project files. They express setup intent in the form the underlying tools already use.
-- **recipe.json** holds composition metadata only (which other Recipes this one includes, persistent customizations, plus the optional `behavior` entrypoint path). It never holds native config.
-- **behavior.mjs** is the zero-config default entrypoint for optional trusted local code covering procedural setup that files alone cannot express, such as running an upstream initializer. Most Recipes do not need it. A Recipe may instead declare another relative `.mjs` file via `"behavior": "setup.mjs"` in recipe.json.
+### Artifacts
 
-Recipes can include other Recipes:
+`artifacts/` contains ordinary native project files. These are the files the underlying tools already understand, such as `package.json`, `tsconfig.json`, `components.json`, or tool-specific config.
+
+The project itself does not get a project-level `tamo.json`.
+
+### recipe.json
+
+`recipe.json` contains Recipe composition metadata, such as included Recipes, persistent customizations, and an optional Behavior entrypoint.
+
+Example:
 
 ```json
 {
   "includes": [
-    {"recipe": "typescript"},
-    {"recipe": "lint"}
+    { "recipe": "typescript" },
+    { "recipe": "lint" }
   ]
 }
 ```
 
-`pack` captures reusable setup as it exists in the source project. It does not infer which Recipes the project was built from and does not invent `behavior.mjs`. See `skills/tamo/SKILL.md` (and `SPEC.md` for the full contract) for Recipe authoring details.
+A Recipe may also choose a custom relative `.mjs` Behavior entrypoint:
 
-## Pack, create, add
+```json
+{
+  "behavior": "scripts/setup.mjs"
+}
+```
 
-**Pack** captures the current project as a Recipe under the Tamo home. Pack is package-manager agnostic: any Node project with a valid package.json can be packed, regardless of the `packageManager` field or which lockfiles are present. The manifest is captured minus the source project's `name` and `version` (project identity, not reusable setup); `packageManager` is preserved when present and never invented. Other files are captured only when explicitly listed with `--include` (repeatable; a directory expands into its files), and dependencies can be trimmed with `--exclude`. Secrets, private keys, lockfiles, caches, dependency directories, and generated output are never captured. The source project is never modified. Repacking over an existing Recipe requires `--force`.
+If no explicit path is configured, `behavior.mjs` is the zero-config default.
 
-**Create** applies a saved Recipe to a new project. Its native artifacts land at their original relative paths, the package name follows the new target directory, and a `pnpm install` is planned visibly. Targets that already exist and are non-empty are blocked, never overwritten. If a Recipe's Behavior needs to generate the target first (an upstream initializer), Tamo applies that preparation stage, then replans from fresh state. The result carries no Tamo metadata.
+### Behavior
 
-**Add** reconciles a Recipe's setup with an existing project's native state. Compatible state is preserved or combined, identical state is a no-op, missing state is added, and conflicting intent blocks with zero operations. Rerunning a settled plan is idempotent.
+Behavior is optional trusted local JavaScript for procedural setup that native files alone cannot express, such as running an upstream initializer.
 
-## Trust and safety
+Most Recipes do not need it.
 
-> **Warning:** `behavior.mjs` is trusted local executable JavaScript. It runs during planning, before confirmation. Review Recipes from untrusted sources before using them. Tamo does not currently sandbox Behavior.
+Behavior can participate around artifact application through three hooks:
 
-Plan safety:
+```text
+prepare
+  ↓
+apply artifacts
+  ↓
+finalize
+  ↓
+verify
+```
 
-- Reviewed inputs are fingerprinted and rechecked before execution; changed inputs invalidate the plan.
-- Conflicts produce zero operations instead of partial writes.
-- External commands (installs, initializers) can still partially change state, and there is no automatic rollback. Execution reports completed and remaining operations on failure, so replan before retrying.
+Behavior is trusted executable code and is not currently sandboxed.
 
-## Current scope and limitations
+## Commands
 
-- Node focus with package-manager-agnostic pack. Dependency installation during `create` is still pnpm-based. Workspaces, Rust/Cargo, and other ecosystems are not supported yet.
-- Native integration has primarily been exercised on Windows x64. Other platforms have not been verified.
-- Behavior is trusted local code with no sandboxing (see above).
-- No automatic rollback after partial execution failures.
-- The Effect lint setup in `test/fixtures/effect-oxlint` is a currently exercised integration example, not the definition of what Tamo is for.
+Run `tamo <command> --help` for exact flags.
+
+### pack
+
+`pack` saves selected setup from an existing Node project as a Recipe.
+
+```sh
+tamo pack web --cwd ./my-project \
+  --include tsconfig.json \
+  --include src \
+  --dry-run
+```
+
+`pack` is package-manager agnostic for Node projects with a valid `package.json`.
+
+The source project's `name` and `version` are not treated as reusable setup. `packageManager` is preserved when present and is never invented.
+
+Secrets, private keys, lockfiles, caches, dependency directories, and generated output are not captured.
+
+The source project is never modified.
+
+Repacking over an existing Recipe requires `--force`.
+
+### create
+
+`create` applies a Recipe to a new project.
+
+```sh
+tamo create my-app --recipe web --dry-run
+```
+
+Native artifacts are written to their normal relative paths. The new package name follows the target directory, and dependency installation is planned visibly.
+
+Targets that already exist and are non-empty are blocked instead of overwritten.
+
+The resulting project contains no `tamo` metadata.
+
+### add
+
+`add` reconciles a Recipe with an existing project.
+
+```sh
+tamo add lint --cwd ./my-project --dry-run
+```
+
+Compatible state is preserved or combined, identical state becomes a no-op, missing state is added, and conflicting intent blocks instead of silently overwriting existing setup.
+
+Rerunning a settled Recipe is idempotent.
+
+### inspect
+
+`inspect` reports setup detected in an existing project and does not modify it.
+
+```sh
+tamo inspect --cwd ./my-project
+```
+
+For machine-readable output:
+
+```sh
+tamo inspect --cwd ./my-project --json
+```
+
+## Safety
+
+`behavior.mjs` and custom Behavior entrypoints are trusted local executable JavaScript. They run during planning, before confirmation.
+
+Review untrusted Recipes before using them.
+
+Other safety properties:
+
+- reviewed inputs are fingerprinted and rechecked before execution
+- changed inputs invalidate the reviewed plan
+- conflicts produce zero operations instead of partial writes
+- mutating commands support `--dry-run`
+- external commands can still partially change state
+- there is currently no automatic rollback
+
+If execution fails after some operations have completed, `tamo` reports completed and remaining work so the project can be replanned before retrying.
+
+## Limitations
+
+- `tamo` currently focuses on Node projects.
+- `tamo pack` can save setup from Node projects using any package manager. New projects created with `tamo create` currently use pnpm for dependency installation.
+- Workspaces and non-Node ecosystems are not supported yet.
+- Native integration has primarily been exercised on Windows x64.
+- Behavior is trusted local code and is not sandboxed.
+- There is no automatic rollback after partial execution failures.
 
 ## Development
 
 Requires Node.js 24.15+ and pnpm.
 
 ```sh
-pnpm install          # install dependencies
-pnpm check            # typecheck, lint, format check, unit tests
-pnpm format           # format TypeScript sources
-pnpm test:integration # end-to-end CLI run against a temp project (may need registry access)
+pnpm install
+pnpm check
+pnpm format
+pnpm test:integration
 ```
 
-To run the CLI from source without installing the npm package:
+To run the CLI directly from source:
 
 ```sh
 pnpm install
 node src/cli.ts --help
 ```
 
-See [SPEC.md](SPEC.md) for the contract and [PARKING_LOT.md](PARKING_LOT.md) for deferred work.
+See [SPEC.md](SPEC.md) for the full contract and [PARKING_LOT.md](PARKING_LOT.md) for deferred work.
 
 ## License
 
