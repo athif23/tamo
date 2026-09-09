@@ -245,9 +245,11 @@ const HELP_PACK = `tamo pack <recipe-name> [--cwd <path>] [--include <path>]... 
 Capture the reusable parts of the current project as a recipe under the
 Tamo home: the manifest as a native artifact (minus the source project's
 name and version, which are project identity, not reusable setup) plus
-explicitly included files. Secrets, generated output, dependency
+explicitly included files. Pack is package-manager agnostic: any Node
+project with a valid package.json can be packed regardless of the
+packageManager field or lockfiles present. Secrets, generated output, dependency
 directories, caches, and lockfiles are never captured. The source project
-is never modified. Currently supports pnpm projects only.
+is never modified.
 
 Flags:
   --cwd <path>        Pack the project at <path> (default: current directory).

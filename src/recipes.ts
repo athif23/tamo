@@ -1,16 +1,16 @@
 import { lstat, rm } from "node:fs/promises";
-import { join, relative } from "node:path";
+import { isAbsolute, join, relative } from "node:path";
 import type { Artifact, OmitEdit, Recipe } from "./compose.ts";
 import { fingerprint, type Snapshot } from "./plan.ts";
 import { entryType, listDirectory, read, write } from "./runtime.ts";
 
 // Durable recipe storage: one directory per recipe under the Tamo home.
 // recipe.json carries only Tamo-specific composition metadata (child
-// includes plus persistent omit customizations) and must stay free of
-// native configuration. An optional behavior.mjs beside it attaches
-// executable Behavior — trusted local executable code, imported and
-// executed during planning (before operation confirmation) and imported
-// demand-first by Core.
+// includes, persistent omit customizations, plus the optional `behavior`
+// entrypoint path) and must stay free of native configuration. An optional
+// behavior module beside it attaches executable Behavior — trusted local
+// executable code, imported and executed during planning (before operation
+// confirmation) and imported demand-first by Core.
 // artifacts/ mirrors target-relative native paths, so
 // artifact identity needs no mapping table: the relative path IS the
 // identity Core and the handlers already use. There is no migration from
@@ -31,14 +31,53 @@ function artifactsDir(home: string, name: string): string {
   return join(recipeDir(home, name), "artifacts");
 }
 
-// The single supported behavior module filename. Presence beside
-// recipe.json means the recipe has Behavior; absence means artifact-only.
-// The name is fixed — never read from recipe.json, never resolved
-// remotely — so no path in stored data can redirect the import.
+// The default behavior module filename. When recipe.json declares no
+// `behavior`, presence of this file beside recipe.json means the recipe has
+// Behavior and absence means artifact-only. When recipe.json declares an
+// explicit `behavior` path, that file is the sole entrypoint and this
+// default is not auto-loaded.
 export const BEHAVIOR_FILENAME = "behavior.mjs";
 
 function behaviorPath(home: string, name: string): string {
   return join(recipeDir(home, name), BEHAVIOR_FILENAME);
+}
+
+// Optional `behavior` metadata in recipe.json: an explicit relative `.mjs`
+// entrypoint under the recipe directory (for example "setup.mjs" or
+// "scripts/setup.mjs"). Validation is conservative: non-empty string,
+// relative, stays inside the recipe directory, and `.mjs` only. No
+// auto-discovery, no remote modules, no other extensions.
+function readBehaviorDeclaration(
+  value: Record<string, unknown>,
+  jsonPath: string,
+): string | undefined {
+  if (value.behavior === undefined) return undefined;
+  const raw = value.behavior;
+  if (typeof raw !== "string" || raw.length === 0)
+    throw new Error(`Recipe behavior must be a non-empty relative .mjs path: ${jsonPath}.`);
+  const normalized = raw.replaceAll("\\", "/");
+  if (
+    !normalized ||
+    normalized.startsWith("/") ||
+    /^[a-zA-Z]:/.test(normalized) ||
+    normalized.startsWith("\\\\")
+  )
+    throw new Error(
+      `Recipe behavior must be a relative path inside the recipe: ${raw} (${jsonPath}).`,
+    );
+  const segments = normalized.split("/");
+  if (segments.includes("") || segments.includes(".."))
+    throw new Error(`Recipe behavior must stay inside the recipe directory: ${raw} (${jsonPath}).`);
+  if (isAbsolute(normalized) || isAbsolute(raw))
+    throw new Error(
+      `Recipe behavior must be a relative path inside the recipe: ${raw} (${jsonPath}).`,
+    );
+  const base = segments[segments.length - 1]!;
+  if (!normalized.endsWith(".mjs") || base.length <= ".mjs".length)
+    throw new Error(
+      `Recipe behavior must use the .mjs extension: ${raw} (${jsonPath}). Only .mjs is supported.`,
+    );
+  return normalized;
 }
 
 function checkName(name: string, source: string): void {
@@ -171,7 +210,12 @@ function readCustomizations(
 async function readRecipeDocument(
   home: string,
   name: string,
-): Promise<{ text: string; includes: { recipe: string }[]; customizations: OmitEdit[] }> {
+): Promise<{
+  text: string;
+  includes: { recipe: string }[];
+  customizations: OmitEdit[];
+  behavior?: string;
+}> {
   const jsonPath = recipeJsonPath(home, name);
   const text = await read(jsonPath);
   if (text === null) throw new Error(`Recipe is missing recipe.json: ${jsonPath}`);
@@ -183,12 +227,13 @@ async function readRecipeDocument(
   }
   if (!isRecord(value)) throw new Error(`Recipe must be a JSON object: ${jsonPath}`);
   for (const key of Object.keys(value))
-    if (key !== "includes" && key !== "customizations")
+    if (key !== "includes" && key !== "customizations" && key !== "behavior")
       throw new Error(`Unknown recipe key "${key}" in ${jsonPath}.`);
   return {
     text,
     includes: readIncludes(value, jsonPath),
     customizations: readCustomizations(value, jsonPath),
+    behavior: readBehaviorDeclaration(value, jsonPath),
   };
 }
 
@@ -280,10 +325,13 @@ export function mergeSnapshots(...lists: Snapshot[][]): Snapshot[] {
 }
 
 // Detect the recipe-local behavior module without importing it: import
-// stays demand-first inside Core planning. The fixed filename keeps stored
-// data out of module resolution; symlinks are rejected so the import can
-// never escape the recipe directory through a link trick.
-async function readBehaviorFile(
+// stays demand-first inside Core planning. The default filename keeps
+// single-file recipes zero-config; an explicit recipe.json `behavior` path
+// selects the sole entrypoint instead (never in addition to the default).
+// Symlinks are rejected so the import can never escape the recipe directory
+// through a link trick, including through a symlinked parent directory of a
+// nested entrypoint.
+async function readDefaultBehaviorFile(
   home: string,
   name: string,
 ): Promise<{ path?: string; snapshot?: Snapshot }> {
@@ -296,6 +344,58 @@ async function readBehaviorFile(
   const contents = await read(candidate);
   if (contents === null) throw new Error(`Recipe behavior disappeared: ${candidate}`);
   return { path: candidate, snapshot: { path: candidate, hash: fingerprint(contents) } };
+}
+
+// Reject symlinked parent directories of a nested entrypoint so
+// scripts/setup.mjs cannot escape through a linked scripts/ directory.
+// Missing intermediate directories end the walk: the final stat below
+// reports the declared file as not found.
+async function assertNoParentSymlink(directory: string, segments: string[]): Promise<void> {
+  for (let index = 1; index < segments.length; index++) {
+    const prefix = join(directory, ...segments.slice(0, index));
+    const status = await lstat(prefix).catch(() => null);
+    if (status === null) return;
+    if (status.isSymbolicLink())
+      throw new Error(`Recipe behavior must not be a symlink: ${prefix}`);
+  }
+}
+
+async function readExplicitBehaviorFile(
+  home: string,
+  name: string,
+  declaration: string,
+): Promise<{ path: string; snapshot: Snapshot }> {
+  const directory = recipeDir(home, name);
+  const candidate = join(directory, declaration);
+  const escapeCheck = relative(directory, candidate).replaceAll("\\", "/");
+  if (!escapeCheck || escapeCheck.startsWith(".."))
+    throw new Error(
+      `Recipe behavior must stay inside the recipe directory: ${declaration} (${recipeJsonPath(home, name)}).`,
+    );
+  await assertNoParentSymlink(directory, declaration.split("/"));
+  const status = await lstat(candidate).catch(() => null);
+  if (status === null)
+    throw new Error(
+      `Recipe '${name}' behavior file not found: ${candidate} (declared as "${declaration}").`,
+    );
+  if (status.isSymbolicLink())
+    throw new Error(`Recipe behavior must not be a symlink: ${candidate}`);
+  if (!status.isFile()) throw new Error(`Recipe behavior must be a regular file: ${candidate}`);
+  const contents = await read(candidate);
+  if (contents === null)
+    throw new Error(
+      `Recipe '${name}' behavior file not found: ${candidate} (declared as "${declaration}").`,
+    );
+  return { path: candidate, snapshot: { path: candidate, hash: fingerprint(contents) } };
+}
+
+async function readBehaviorFile(
+  home: string,
+  name: string,
+  declaration: string | undefined,
+): Promise<{ path?: string; snapshot?: Snapshot }> {
+  if (declaration === undefined) return readDefaultBehaviorFile(home, name);
+  return readExplicitBehaviorFile(home, name, declaration);
 }
 
 export async function loadRecipe(home: string, name: string): Promise<LoadedRecipe> {
@@ -312,7 +412,7 @@ export async function loadRecipe(home: string, name: string): Promise<LoadedReci
   try {
     const document = await readRecipeDocument(home, name);
     const stored = await readRecipeArtifacts(home, name);
-    const behavior = await readBehaviorFile(home, name);
+    const behavior = await readBehaviorFile(home, name, document.behavior);
     const text = document.text;
     return {
       recipe: {

@@ -78,8 +78,8 @@ A Recipe is reusable setup: ordinary native project files plus a small amount of
 ```
 
 - **artifacts** are ordinary native project files. They express setup intent in the form the underlying tools already use.
-- **recipe.json** holds composition metadata only (which other Recipes this one includes, plus persistent customizations). It never holds native config.
-- **behavior.mjs** is optional trusted local code for procedural setup that files alone cannot express, such as running an upstream initializer. Most Recipes do not need it.
+- **recipe.json** holds composition metadata only (which other Recipes this one includes, persistent customizations, plus the optional `behavior` entrypoint path). It never holds native config.
+- **behavior.mjs** is the zero-config default entrypoint for optional trusted local code covering procedural setup that files alone cannot express, such as running an upstream initializer. Most Recipes do not need it. A Recipe may instead declare another relative `.mjs` file via `"behavior": "setup.mjs"` in recipe.json.
 
 Recipes can include other Recipes:
 
@@ -96,7 +96,7 @@ Recipes can include other Recipes:
 
 ## Pack, create, add
 
-**Pack** captures the current project as a Recipe under the Tamo home. It currently supports pnpm projects only. The manifest is captured minus the source project's `name` and `version` (project identity, not reusable setup); other files are captured only when explicitly listed with `--include` (repeatable; a directory expands into its files), and dependencies can be trimmed with `--exclude`. Secrets, private keys, lockfiles, caches, dependency directories, and generated output are never captured. The source project is never modified. Repacking over an existing Recipe requires `--force`.
+**Pack** captures the current project as a Recipe under the Tamo home. Pack is package-manager agnostic: any Node project with a valid package.json can be packed, regardless of the `packageManager` field or which lockfiles are present. The manifest is captured minus the source project's `name` and `version` (project identity, not reusable setup); `packageManager` is preserved when present and never invented. Other files are captured only when explicitly listed with `--include` (repeatable; a directory expands into its files), and dependencies can be trimmed with `--exclude`. Secrets, private keys, lockfiles, caches, dependency directories, and generated output are never captured. The source project is never modified. Repacking over an existing Recipe requires `--force`.
 
 **Create** applies a saved Recipe to a new project. Its native artifacts land at their original relative paths, the package name follows the new target directory, and a `pnpm install` is planned visibly. Targets that already exist and are non-empty are blocked, never overwritten. If a Recipe's Behavior needs to generate the target first (an upstream initializer), Tamo applies that preparation stage, then replans from fresh state. The result carries no Tamo metadata.
 
@@ -114,7 +114,7 @@ Plan safety:
 
 ## Current scope and limitations
 
-- Node/pnpm focus. `pack` currently supports pnpm projects only. Workspaces, Rust/Cargo, and other ecosystems are not supported yet.
+- Node focus with package-manager-agnostic pack. Dependency installation during `create` is still pnpm-based. Workspaces, Rust/Cargo, and other ecosystems are not supported yet.
 - Native integration has primarily been exercised on Windows x64. Other platforms have not been verified.
 - Behavior is trusted local code with no sandboxing (see above).
 - No automatic rollback after partial execution failures.

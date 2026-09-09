@@ -17,13 +17,15 @@ Tamo stores reusable setup as **Recipes** under the Tamo home
 ~/.tamo/recipes/<name>/
   recipe.json     # composition metadata only, never native config
   artifacts/**    # ordinary native project files at their project paths
-  behavior.mjs    # optional trusted local executable setup
+  behavior.mjs    # default trusted local executable setup (or custom .mjs via recipe.json)
 ```
 
 - **Artifacts** are ordinary native state (`package.json`, configs, source
   files). Resulting projects stay ordinary and carry no Tamo metadata.
-- **`behavior.mjs`** is trusted local code for procedural setup artifacts
-  cannot express. It runs during planning, before confirmation.
+- **`behavior.mjs`** is the default trusted local code for procedural setup artifacts
+  cannot express. It runs during planning, before confirmation. A Recipe may
+  instead declare `"behavior": "setup.mjs"` (another relative `.mjs` file)
+  in recipe.json; lifecycle semantics are unchanged.
 
 ## Commands
 
@@ -36,12 +38,16 @@ tamo pack <recipe-name> [--cwd <path>] [--include <path>]... [--exclude <pkg>]..
 
 - `inspect` reports the factual setup of a project. Read-only.
 - `create` applies a Recipe to a new project. The package name follows
-  the target directory. Non-empty targets are blocked, never overwritten.
+  the target directory. Dependency installation during `create` is still
+  pnpm-based. Non-empty targets are blocked, never overwritten.
 - `add` applies a Recipe to the existing project at `--cwd` (default `.`).
-- `pack` captures the current project as a Recipe. Currently supports
-  pnpm projects only. The manifest is always
+- `pack` captures the current project as a Recipe. Pack is package-manager
+  agnostic: do not require users to add `packageManager` just to pack. Any
+  Node project with a valid package.json is packable regardless of the
+  packageManager field or lockfiles present. The manifest is always
   captured (minus the source project's `name` and `version`, which are
-  project identity rather than reusable setup); other files only via
+  project identity rather than reusable setup; `packageManager` is preserved
+  when present and never invented); other files only via
   `--include` (a file or a directory, which expands); dependencies can be
   trimmed with `--exclude`. Secrets, keys, lockfiles, caches, dependency
   directories, and generated output are never captured. Repacking over an
@@ -89,7 +95,7 @@ user when judgment is required.
 `pack` captures reusable native state as it exists. Source package `name`
 and `version` are not captured as reusable identity. Pack does not infer
 Recipe ancestry, does not record which Recipes the project "uses", does
-not invent `behavior.mjs`, and needs no provenance metadata. Do not
+not invent `behavior.mjs` or a `behavior` property, and needs no provenance metadata. Do not
 decompose or refactor the packed result.
 
 ## Authoring a Recipe
@@ -100,9 +106,9 @@ config):
 
 ```text
 ~/.tamo/recipes/<name>/
-  recipe.json     # includes + persistent customizations only
+  recipe.json     # includes + persistent customizations + optional behavior path
   artifacts/**    # ordinary native project files at their project paths
-  behavior.mjs    # optional trusted local executable setup
+  behavior.mjs    # default trusted local executable setup
 ```
 
 Composition:
@@ -131,6 +137,20 @@ and `rules` in Oxlint configs):
 ```
 
 ### behavior.mjs
+
+`behavior.mjs` remains the default entrypoint. A Recipe may instead declare
+a custom relative `.mjs` file:
+
+```json
+{
+  "behavior": "setup.mjs"
+}
+```
+
+Nested paths such as `"behavior": "scripts/setup.mjs"` also work. Custom
+Behavior remains `.mjs` only (no `.ts`/`.js`/`.cjs`, no arrays, no
+auto-discovery, no remote modules); lifecycle semantics are unchanged, and
+pack remains Behavior-blind.
 
 Minimal valid plain-JS module (only `prepare`/`finalize`/`verify` keys are
 allowed; at least one hook must be present):

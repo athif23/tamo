@@ -87,12 +87,13 @@ function withoutBom(bytes: Uint8Array): Uint8Array {
     : bytes;
 }
 
-// Packability gate: only ordinary Node/pnpm projects can be packed so far.
+// Packability gate: any ordinary Node project can be packed. Pack captures
+// reusable native setup and never needs to determine a single active package
+// manager, so packageManager presence, value, and lockfiles do not gate
+// eligibility. Lockfiles stay excluded from artifacts by the denylist below.
 function packableConflicts(inspection: Inspection): string[] {
   if (inspection.kind !== "node")
     return ["Only Node projects can be packed so far; no package.json was understood."];
-  if (!inspection.packageManager?.startsWith("pnpm@"))
-    return ["Only pnpm projects can be packed so far."];
   return [];
 }
 

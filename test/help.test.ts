@@ -60,11 +60,11 @@ test("each command documents its own usage and flags", () => {
   assert.ok(!help("inspect", "--help").includes("--recipe"));
 });
 
-test("pack help states the pnpm-only limitation", () => {
+test("pack help states package-manager-agnostic packing", () => {
   const output = help("pack", "--help");
-  assert.ok(output.includes("pnpm"), "pack help must mention pnpm");
+  assert.ok(output.includes("package-manager agnostic"), "pack help must state pack is agnostic");
   assert.ok(
-    output.includes("Currently supports pnpm projects only"),
-    "pack help must state the pnpm-only limitation",
+    !output.includes("Currently supports pnpm projects only"),
+    "pack help must not state the old pnpm-only limitation",
   );
 });
