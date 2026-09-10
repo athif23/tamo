@@ -4,6 +4,8 @@
 
 It helps set up ordinary projects without taking ownership of them. Native project files stay authoritative, and the project does not depend on `tamo` afterward.
 
+<video src="https://github.com/user-attachments/assets/7aedaa4d-2a8e-4f86-87b2-d881f18960ea" controls muted loop playsinline width="880"></video>
+
 ## Install
 
 ### CLI
@@ -25,6 +27,20 @@ npx skills add athif23/tamo --skill tamo -g   # global
 Installing the skill does not install the CLI itself.
 
 ## Quick start
+
+### With an agent
+
+Once the skill is installed, you can describe what you want without naming a Recipe first:
+
+> create a web app using TanStack Start, TypeScript, Tailwind, and shadcn
+
+The agent can discover matching saved Recipes before rebuilding the same setup.
+
+When you want to keep a setup for later:
+
+> i like this setup, save it with tamo
+
+The agent can curate the reusable parts into a Recipe while leaving the source project untouched.
 
 ### Create from a Recipe
 
@@ -69,20 +85,6 @@ tamo inspect --cwd ./my-project
 ```
 
 Every mutating command supports `--dry-run`, so you can review what `tamo` plans to do before anything changes.
-
-### With an agent
-
-Once the skill is installed, you can describe what you want without naming a Recipe first:
-
-> create a web app using TanStack Start, TypeScript, Tailwind, and shadcn
-
-The agent can discover matching saved Recipes before rebuilding the same setup.
-
-When you want to keep a setup for later:
-
-> i like this setup, save it with tamo
-
-The agent can curate the reusable parts into a Recipe while leaving the source project untouched.
 
 ## Why tamo
 
